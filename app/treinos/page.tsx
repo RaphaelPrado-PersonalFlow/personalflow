@@ -341,6 +341,17 @@ export default function WorkoutsPage() {
     setDraftExercises((current) => [...current, { id, name: exerciseToAdd, prescription: "3 × 10–12", sets: 3, reps: "10–12", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [10, 10, 10], methodSeries: [] }]);
   }
 
+  function addExerciseToEditorWorkout(workoutId: number, exercises: Exercise[]) {
+    if (!exerciseCatalog.some((exercise) => exercise.name === exerciseToAdd)) return;
+    const id = Math.max(...Object.values(workoutDrafts).flat().map((exercise) => exercise.id), ...draftExercises.map((exercise) => exercise.id), 0) + 1;
+    const exercise: Exercise = { id, name: exerciseToAdd, prescription: "3 × 10–12", sets: 3, reps: "10–12", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [10, 10, 10], methodSeries: [] };
+    if (prescriptionEditor?.workoutId === workoutId) {
+      setDraftExercises((current) => [...current, exercise]);
+    } else {
+      setWorkoutDrafts((current) => ({ ...current, [workoutId]: [...exercises, exercise] }));
+    }
+  }
+
   function moveDraftExercise(index: number, direction: -1 | 1) {
     const destination = index + direction;
     if (destination < 0 || destination >= draftExercises.length) return;
@@ -491,7 +502,7 @@ export default function WorkoutsPage() {
                         </div>}
                       </div>;
                     })}</div>
-                    {active && <div className="mt-3 flex gap-2"><input list={`exercise-options-${item.id}`} value={exerciseToAdd} onChange={(event)=>setExerciseToAdd(event.target.value)} placeholder="Adicionar exercício" className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-xs" /><datalist id={`exercise-options-${item.id}`}>{exerciseCatalog.map((exercise)=><option key={exercise.name} value={exercise.name}/>)}</datalist><button type="button" onClick={addDraftExercise} className="rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white">＋</button></div>}
+                    <div className="mt-3 flex gap-2"><input list={`exercise-options-${item.id}`} value={exerciseToAdd} onChange={(event)=>setExerciseToAdd(event.target.value)} placeholder="Adicionar exercício" className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-xs" /><datalist id={`exercise-options-${item.id}`}>{exerciseCatalog.map((exercise)=><option key={exercise.name} value={exercise.name}/>)}</datalist><button type="button" onClick={() => addExerciseToEditorWorkout(item.id, item.exercises)} className="rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white" aria-label={`Adicionar exercício ao ${item.name}`}>＋</button></div>
                     <div className="mt-4 border-t border-[var(--border)] pt-3"><div className="mb-3 flex items-center justify-between"><div><p className="text-xs font-semibold">Volume do treino</p><p className="text-[11px] text-[var(--muted)]">Distribuição por grupo muscular</p></div><Badge tone="info">{total.toLocaleString("pt-BR")} séries</Badge></div><div className="space-y-2.5">{item.volume.map((volume)=><div key={volume.muscle}><div className="mb-1 flex justify-between text-xs"><span>{volume.muscle}</span><strong>{volume.sets.toLocaleString("pt-BR")}</strong></div><div className="h-2.5 overflow-hidden rounded-full bg-[var(--surface)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{width:`${volume.sets/maximum*100}%`}}/></div></div>)}</div></div>
                   </article>;
                 })}
