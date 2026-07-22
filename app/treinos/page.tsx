@@ -126,6 +126,8 @@ export default function WorkoutsPage() {
   const [draftExercises, setDraftExercises] = useState<Exercise[]>([]);
   const [workoutDrafts, setWorkoutDrafts] = useState<Record<number, Exercise[]>>({});
   const [exerciseToAdd, setExerciseToAdd] = useState("");
+  const [exerciseSearchWorkout, setExerciseSearchWorkout] = useState<number | null>(null);
+  const [exerciseSuggestionsOpen, setExerciseSuggestionsOpen] = useState(false);
   const [expandedEditorExercise, setExpandedEditorExercise] = useState<number | null>(null);
   const [editingWorkoutDetails, setEditingWorkoutDetails] = useState<number | null>(null);
   const [workoutToDeleteInEditor, setWorkoutToDeleteInEditor] = useState<number | null>(null);
@@ -340,6 +342,7 @@ export default function WorkoutsPage() {
     const id = Math.max(...draftExercises.map((exercise) => exercise.id), 0) + 1;
     setDraftExercises((current) => [...current, { id, name: exerciseToAdd, prescription: "3 × 10–12", sets: 3, reps: "10–12", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [10, 10, 10], methodSeries: [] }]);
     setExerciseToAdd("");
+    setExerciseSuggestionsOpen(false);
   }
 
   function addExerciseToEditorWorkout(workoutId: number, exercises: Exercise[]) {
@@ -352,6 +355,7 @@ export default function WorkoutsPage() {
       setWorkoutDrafts((current) => ({ ...current, [workoutId]: [...exercises, exercise] }));
     }
     setExerciseToAdd("");
+    setExerciseSuggestionsOpen(false);
   }
 
   function moveDraftExercise(index: number, direction: -1 | 1) {
@@ -504,7 +508,7 @@ export default function WorkoutsPage() {
                         </div>}
                       </div>;
                     })}</div>
-                    <div className="mt-3 flex gap-2"><input list={`exercise-options-${item.id}`} value={exerciseToAdd} onChange={(event)=>setExerciseToAdd(event.target.value)} placeholder="Adicionar exercício" className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-xs" /><datalist id={`exercise-options-${item.id}`}>{exerciseCatalog.map((exercise)=><option key={exercise.name} value={exercise.name}/>)}</datalist><button type="button" onClick={() => addExerciseToEditorWorkout(item.id, item.exercises)} className="rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white" aria-label={`Adicionar exercício ao ${item.name}`}>＋</button></div>
+                    <div className="mt-3 flex items-start gap-2"><div className="relative min-w-0 flex-1"><input value={exerciseSearchWorkout === item.id ? exerciseToAdd : ""} onFocus={() => { setExerciseSearchWorkout(item.id); setExerciseSuggestionsOpen(true); }} onChange={(event) => { setExerciseSearchWorkout(item.id); setExerciseSuggestionsOpen(true); setExerciseToAdd(event.target.value); }} placeholder="Adicionar exercício" autoComplete="off" className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-xs outline-none focus:border-blue-500" />{exerciseSearchWorkout === item.id && exerciseSuggestionsOpen && exerciseToAdd.trim() && <div className="absolute left-0 right-0 top-10 z-30 max-h-52 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-2xl">{exerciseCatalog.filter((exercise) => exercise.name.toLocaleLowerCase("pt-BR").includes(exerciseToAdd.toLocaleLowerCase("pt-BR"))).map((exercise) => <button key={exercise.name} type="button" onClick={() => { setExerciseToAdd(exercise.name); setExerciseSuggestionsOpen(false); }} className="block w-full rounded-lg px-3 py-2 text-left text-xs text-[var(--foreground)] hover:bg-blue-500/10 hover:text-blue-500">{exercise.name}</button>)}{exerciseCatalog.every((exercise) => !exercise.name.toLocaleLowerCase("pt-BR").includes(exerciseToAdd.toLocaleLowerCase("pt-BR"))) && <p className="px-3 py-2 text-xs text-[var(--muted)]">Nenhum exercício encontrado</p>}</div>}</div><button type="button" onClick={() => addExerciseToEditorWorkout(item.id, item.exercises)} className="h-9 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white" aria-label={`Adicionar exercício ao ${item.name}`}>＋</button></div>
                     <div className="mt-4 border-t border-[var(--border)] pt-3"><div className="mb-3 flex items-center justify-between"><div><p className="text-xs font-semibold">Volume do treino</p><p className="text-[11px] text-[var(--muted)]">Distribuição por grupo muscular</p></div><Badge tone="info">{total.toLocaleString("pt-BR")} séries</Badge></div><div className="space-y-2.5">{item.volume.map((volume)=><div key={volume.muscle}><div className="mb-1 flex justify-between text-xs"><span>{volume.muscle}</span><strong>{volume.sets.toLocaleString("pt-BR")}</strong></div><div className="h-2.5 overflow-hidden rounded-full bg-[var(--surface)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{width:`${volume.sets/maximum*100}%`}}/></div></div>)}</div></div>
                   </article>;
                 })}
