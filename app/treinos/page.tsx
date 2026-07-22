@@ -89,16 +89,9 @@ function repetitionsBySeries(exercise: Exercise, sets = exercise.sets ?? seriesF
   return Array.from({ length: sets }, (_, index) => existing[index] ?? fallback);
 }
 
-function methodConfiguration(method: AdvancedMethod) {
-  const configurations: Partial<Record<AdvancedMethod, { rounds: string; value: string; placeholder: string }>> = {
-    "Drop-set": { rounds: "Número de reduções", value: "Redução de carga", placeholder: "Ex.: 20% por redução" },
-    "Rest-pause": { rounds: "Número de pausas", value: "Pausa curta", placeholder: "Ex.: 15 segundos" },
-    "Cluster set": { rounds: "Número de blocos", value: "Repetições por bloco", placeholder: "Ex.: 4 repetições" },
-    "Pirâmide": { rounds: "Número de etapas", value: "Progressão planejada", placeholder: "Ex.: 12/10/8 reps" },
-    "Myo-reps": { rounds: "Mini-séries", value: "Repetições por mini-série", placeholder: "Ex.: 4 repetições" },
-    "Bi-set": { rounds: "Número de voltas", value: "Exercício combinado", placeholder: "Ex.: Crucifixo no cabo" },
-  };
-  return configurations[method];
+function methodConfiguration(_method: AdvancedMethod): { rounds: string; value: string; placeholder: string } | undefined {
+  void _method;
+  return undefined;
 }
 
 function calculateWorkoutVolume(exercises: Exercise[]) {
@@ -106,6 +99,14 @@ function calculateWorkoutVolume(exercises: Exercise[]) {
     const catalogExercise = exerciseCatalog.find((item) => item.name === exercise.name);
     const series = exercise.sets ?? seriesFromPrescription(exercise.prescription);
     catalogExercise?.muscles.forEach((item) => { result[item.muscle] = (result[item.muscle] ?? 0) + series * item.factor; });
+    return result;
+  }, {});
+  return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
+}
+
+function calculateProtocolVolume(workouts: Workout[]) {
+  const totals = workouts.flatMap((workout) => workout.volume).reduce<Record<string, number>>((result, item) => {
+    result[item.muscle] = (result[item.muscle] ?? 0) + item.sets;
     return result;
   }, {});
   return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
@@ -123,7 +124,10 @@ export default function WorkoutsPage() {
   const [workoutToRemove, setWorkoutToRemove] = useState<{ protocolId: number; workout: Workout } | null>(null);
   const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: number; workoutId: number } | null>(null);
   const [draftExercises, setDraftExercises] = useState<Exercise[]>([]);
+  const [workoutDrafts, setWorkoutDrafts] = useState<Record<number, Exercise[]>>({});
   const [exerciseToAdd, setExerciseToAdd] = useState(exerciseCatalog[0].name);
+  const [expandedEditorExercise, setExpandedEditorExercise] = useState<number | null>(null);
+  const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: number } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
 
   const filteredProtocols = useMemo(() => {
@@ -221,15 +225,23 @@ export default function WorkoutsPage() {
   }
 
   function openPrescriptionEditor(protocolId: number, workout: Workout) {
+    const protocol = protocols.find((item) => item.id === protocolId);
     setPrescriptionEditor({ protocolId, workoutId: workout.id });
     setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
+    setWorkoutDrafts(Object.fromEntries((protocol?.workouts ?? []).map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
+    setExpandedEditorExercise(null);
+    setVolumeView(null);
   }
 
   function selectEditorWorkout(protocolId: number, workoutId: number) {
+    if (prescriptionEditor) {
+      setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises }));
+    }
     const workout = protocols.find((protocol) => protocol.id === protocolId)?.workouts.find((item) => item.id === workoutId);
     if (!workout) return;
     setPrescriptionEditor({ protocolId, workoutId });
-    setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
+    setDraftExercises((workoutDrafts[workoutId] ?? workout.exercises).map((exercise) => ({ ...exercise })));
+    setExpandedEditorExercise(null);
   }
 
   function updateDraftExercise(id: number, field: "load" | "rest" | "methodValue", value: string) {
@@ -301,9 +313,12 @@ export default function WorkoutsPage() {
 
   function savePrescription() {
     if (!prescriptionEditor) return;
-    const volume = calculateWorkoutVolume(draftExercises);
+    const allDrafts = { ...workoutDrafts, [prescriptionEditor.workoutId]: draftExercises };
     setProtocols((current) => current.map((protocol) => protocol.id === prescriptionEditor.protocolId
-      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === prescriptionEditor.workoutId ? { ...workout, exercises: draftExercises, volume } : workout) }
+      ? { ...protocol, workouts: protocol.workouts.map((workout) => {
+        const exercises = allDrafts[workout.id] ?? workout.exercises;
+        return { ...workout, exercises, volume: calculateWorkoutVolume(exercises) };
+      }) }
       : protocol));
     setPrescriptionEditor(null);
   }
@@ -394,6 +409,64 @@ export default function WorkoutsPage() {
       {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Defina o planejamento inicial do aluno.</p></div><button type="button" onClick={() => setNewProtocolOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select name="student" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{students.map((student) => <option key={student}>{student}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setNewProtocolOpen(false)}>Cancelar</Button><Button type="submit">Criar protocolo</Button></div></form></div>}
 
       {prescriptionEditor && (() => {
+        const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);
+        const activeWorkout = protocol?.workouts.find((item) => item.id === prescriptionEditor.workoutId);
+        if (!protocol || !activeWorkout) return null;
+        const editorWorkouts = protocol.workouts.map((item) => {
+          const exercises = item.id === activeWorkout.id ? draftExercises : workoutDrafts[item.id] ?? item.exercises;
+          return { ...item, exercises, volume: calculateWorkoutVolume(exercises) };
+        });
+        const protocolVolume = calculateProtocolVolume(editorWorkouts);
+        const selectedWorkout = volumeView?.scope === "workout" ? editorWorkouts.find((item) => item.id === volumeView.workoutId) : undefined;
+        const selectedVolume = volumeView?.scope === "protocol" ? protocolVolume : selectedWorkout?.volume ?? [];
+        const selectedTotal = selectedVolume.reduce((total, item) => total + item.sets, 0);
+        const maximumVolume = Math.max(...selectedVolume.map((item) => item.sets), 1);
+
+        return <div className="fixed inset-0 z-[65] overflow-y-auto bg-slate-950/90 p-2 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="weekly-prescription-title">
+          <div className="mx-auto my-2 w-full max-w-[1500px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl">
+            <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--surface)] p-4 sm:px-6">
+              <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor semanal de prescrição</p><h2 id="weekly-prescription-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.frequency}× por semana</p></div>
+              <div className="flex items-center gap-2"><button type="button" onClick={() => setVolumeView({ scope: "protocol" })} className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-left text-xs text-blue-500"><strong className="block text-sm">{protocolVolume.reduce((total, item) => total + item.sets, 0).toLocaleString("pt-BR")} séries · {protocolVolume.length} grupos</strong><span>Volume do protocolo</span></button><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-10 place-items-center rounded-xl hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
+            </header>
+
+            <section className="border-b border-[var(--border)] p-4 sm:p-6">
+              <div className="mb-3 flex items-center justify-between gap-3"><div><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Selecione um exercício para editar. Os volumes abrem ao tocar nos indicadores.</p></div></div>
+              <div className="overflow-x-auto pb-2"><div className="grid auto-cols-[280px] grid-flow-col gap-3 lg:auto-cols-[minmax(260px,1fr)]">
+                {editorWorkouts.map((item) => <article key={item.id} className={`rounded-2xl border p-3 ${item.id === activeWorkout.id ? "border-blue-500 bg-blue-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}>
+                  <div className="flex items-start justify-between gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 text-left"><strong className="block truncate">{item.name}</strong><span className="text-xs text-[var(--muted)]">{item.focus}</span></button><Badge tone={item.id === activeWorkout.id ? "info" : "neutral"}>{item.duration} min</Badge></div>
+                  <button type="button" onClick={() => setVolumeView({ scope: "workout", workoutId: item.id })} className="mt-3 flex w-full items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {item.volume.reduce((total, volume) => total + volume.sets, 0).toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos ›</span></button>
+                  <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => <button key={exercise.id} type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(exercise.id); }} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${item.id === activeWorkout.id && expandedEditorExercise === exercise.id ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span></span><span className="text-[var(--muted)]">›</span></button>)}</div>
+                  {item.exercises.length === 0 && <p className="mt-3 rounded-xl border border-dashed border-[var(--border)] p-4 text-center text-xs text-[var(--muted)]">Treino sem exercícios</p>}
+                </article>)}
+              </div></div>
+            </section>
+
+            <div className="grid gap-5 p-4 sm:p-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(280px,.7fr)]">
+              <section>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editando</p><h3 className="text-lg font-semibold">{activeWorkout.name} · {activeWorkout.focus}</h3></div><div className="flex flex-1 flex-col gap-2 sm:max-w-xl sm:flex-row"><label className="min-w-0 flex-1 text-xs font-medium text-[var(--muted)]">Adicionar exercício<input list="weekly-exercise-options" value={exerciseToAdd} onChange={(event) => setExerciseToAdd(event.target.value)} placeholder="Comece a digitar" className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-blue-500" /><datalist id="weekly-exercise-options">{exerciseCatalog.map((exercise) => <option key={exercise.name} value={exercise.name} />)}</datalist></label><Button onClick={addDraftExercise}>＋ Adicionar</Button></div></div>
+                <div className="mt-4 space-y-2">{draftExercises.map((exercise, index) => {
+                  const isOpen = expandedEditorExercise === exercise.id;
+                  const method = exercise.method ?? "Convencional";
+                  const sets = exercise.sets ?? seriesFromPrescription(exercise.prescription);
+                  const seriesReps = repetitionsBySeries(exercise, sets);
+                  const selectedMethodSeries = exercise.methodSeries ?? [];
+                  return <article key={exercise.id} className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
+                    <div className="flex items-center gap-2 p-3"><button type="button" onClick={() => setExpandedEditorExercise(isOpen ? null : exercise.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><span className="grid size-8 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load} · {method}</span></span><span className={`transition-transform ${isOpen ? "rotate-90" : ""}`}>›</span></button><button type="button" onClick={() => moveDraftExercise(index, -1)} disabled={index === 0} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index, 1)} disabled={index === draftExercises.length - 1} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current) => current.filter((item) => item.id !== exercise.id))} className="grid size-8 place-items-center rounded-lg text-red-500 hover:bg-red-500/10">×</button></div>
+                    {isOpen && <div className="border-t border-[var(--border)] p-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><label className="text-xs text-[var(--muted)]">Séries<select value={sets} onChange={(event) => updateDraftExercisePrescription(exercise.id, "sets", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]">{[1,2,3,4,5,6].map((value) => <option key={value} value={value}>{value}×</option>)}</select></label><label className="text-xs text-[var(--muted)]">Repetições<input value={exercise.reps ?? repetitionsFromPrescription(exercise.prescription)} onChange={(event) => updateDraftExercisePrescription(exercise.id, "reps", event.target.value)} disabled={method !== "Convencional"} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm disabled:opacity-50" /></label><label className="text-xs text-[var(--muted)]">Carga<input value={exercise.load} onChange={(event) => updateDraftExercise(exercise.id, "load", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" /></label><label className="text-xs text-[var(--muted)]">Descanso<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label></div><label className="mt-3 block text-xs text-[var(--muted)]">Método<select value={method} onChange={(event) => updateDraftMethod(exercise.id, event.target.value as AdvancedMethod)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select></label>
+                      {method !== "Convencional" && <div className="mt-3 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold text-blue-500">Configuração por série</p><p className="mt-1 text-xs text-[var(--muted)]">{method === "Pirâmide" ? "Defina as repetições de cada etapa." : "Toque na série para aplicar ou remover o método."}</p></div><Badge tone="info">{method}</Badge></div><div className="mt-4 flex items-center gap-2 overflow-x-auto pb-1">{seriesReps.map((repetitions, seriesIndex) => { const applied = method === "Pirâmide" || selectedMethodSeries.includes(seriesIndex); return <div key={seriesIndex} className="flex shrink-0 items-center gap-2">{seriesIndex > 0 && <span className="text-[var(--muted)]">—</span>}<div className={`w-24 rounded-xl border p-2 text-center ${applied ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}><button type="button" onClick={() => toggleMethodSeries(exercise.id, seriesIndex)} disabled={method === "Pirâmide"} className="w-full text-[11px] font-semibold"><span className="block">Série {seriesIndex + 1}</span><span className={`block ${applied ? "text-blue-500" : "text-[var(--muted)]"}`}>{applied ? method : "Normal"}</span></button><select value={repetitions} onChange={(event) => updateSeriesRepetitions(exercise.id, seriesIndex, Number(event.target.value))} className="mt-2 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm font-semibold">{Array.from({ length: 20 }, (_, value) => value + 1).map((value) => <option key={value}>{value}</option>)}</select></div></div>; })}</div>{["Drop-set","Rest-pause","Myo-reps"].includes(method) && <p className="mt-3 text-xs text-[var(--muted)]">Aplicado inicialmente à última série; selecione no máximo duas.</p>}</div>}
+                    </div>}
+                  </article>;
+                })}{draftExercises.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] p-8 text-center text-sm text-[var(--muted)]">Adicione o primeiro exercício deste treino.</div>}</div>
+              </section>
+
+              <aside className="h-fit rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 lg:sticky lg:top-24"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Volume selecionado</p><h3 className="mt-1 font-semibold">{volumeView?.scope === "protocol" ? "Protocolo completo" : selectedWorkout?.name ?? activeWorkout.name}</h3></div>{volumeView && <button type="button" onClick={() => setVolumeView(null)} className="grid size-8 place-items-center rounded-lg hover:bg-blue-500/10">×</button>}</div>{volumeView ? <><div className="mt-3"><Badge tone="info">{selectedTotal.toLocaleString("pt-BR")} séries · {selectedVolume.length} grupos</Badge></div><div className="mt-5 space-y-4">{selectedVolume.map((item) => <div key={item.muscle}><div className="mb-1.5 flex justify-between text-sm"><span>{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")}</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.sets / maximumVolume * 100}%` }} /></div></div>)}</div></> : <p className="mt-4 text-sm leading-6 text-[var(--muted)]">Clique no indicador de um treino ou no volume do protocolo para abrir o gráfico.</p>}</aside>
+            </div>
+            <footer className="sticky bottom-0 z-20 flex flex-col-reverse gap-2 border-t border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:justify-end sm:px-6"><Button variant="ghost" onClick={() => setPrescriptionEditor(null)}>Cancelar</Button><Button onClick={savePrescription}>Salvar prescrição semanal</Button></footer>
+          </div>
+        </div>;
+      })()}
+
+      {Boolean(0) && prescriptionEditor && (() => {
         const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);
         const workout = protocol?.workouts.find((item) => item.id === prescriptionEditor.workoutId);
         if (!protocol || !workout) return null;
