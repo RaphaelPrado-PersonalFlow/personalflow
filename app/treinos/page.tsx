@@ -104,6 +104,37 @@ export default function WorkoutsPage() {
     setCompletedExercises((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
+  function copyWorkout(workout: Workout, name = `${workout.name} (cópia)`): Workout {
+    const workoutId = Date.now() + Math.floor(Math.random() * 1000);
+    return {
+      ...workout,
+      id: workoutId,
+      name,
+      exercises: workout.exercises.map((exercise, index) => ({ ...exercise, id: workoutId * 100 + index })),
+      volume: workout.volume.map((item) => ({ ...item })),
+    };
+  }
+
+  function duplicateProtocol(protocol: Protocol) {
+    const protocolId = Date.now();
+    const copy: Protocol = {
+      ...protocol,
+      id: protocolId,
+      status: "Rascunho",
+      workouts: protocol.workouts.map((workout) => copyWorkout(workout, workout.name)),
+    };
+    setProtocols((current) => [copy, ...current]);
+    setExpanded((current) => [protocolId, ...current]);
+  }
+
+  function duplicateWorkout(protocolId: number, workout: Workout) {
+    const copy = copyWorkout(workout);
+    setProtocols((current) => current.map((protocol) => protocol.id === protocolId
+      ? { ...protocol, workouts: [...protocol.workouts, copy] }
+      : protocol));
+    setExpandedWorkouts((current) => [...current, copy.id]);
+  }
+
   const activeCount = protocols.filter((protocol) => protocol.status === "Ativo").length;
   const workoutCount = protocols.reduce((total, protocol) => total + protocol.workouts.length, 0);
 
@@ -162,7 +193,7 @@ export default function WorkoutsPage() {
                     {workoutExpanded && <div className="grid gap-5 border-t border-[var(--border)] p-4 lg:grid-cols-[1fr_1.2fr]">
                       <div><h4 className="text-sm font-semibold">Exercícios prescritos</h4><div className="mt-3 space-y-2">{workout.exercises.map((exercise, index) => <div key={exercise.id} className="flex items-center gap-3 rounded-xl bg-[var(--surface)] p-3"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{exercise.name}</p><p className="mt-0.5 text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load}</p></div></div>)}</div></div>
                       <div><div className="flex items-end justify-between gap-3"><div><h4 className="text-sm font-semibold">Volume por grupo muscular</h4><p className="mt-1 text-xs text-[var(--muted)]">Séries equivalentes neste treino</p></div><Badge tone="info">{workout.volume.reduce((total, item) => total + item.sets, 0).toLocaleString("pt-BR")} séries</Badge></div><div className="mt-4 space-y-3">{workout.volume.map((item) => <div key={item.muscle}><div className="mb-1.5 flex items-center justify-between gap-3 text-xs"><span className="font-medium">{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")} séries</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.sets / maximumVolume * 100}%` }} /></div></div>)}</div><p className="mt-4 text-xs text-[var(--muted)]">O cálculo considera séries diretas e a participação ponderada dos músculos secundários.</p></div>
-                      <Button className="w-full lg:col-span-2 sm:hidden" onClick={() => startSession(protocol, workout)}>Iniciar sessão</Button>
+                      <div className="flex flex-col gap-2 sm:flex-row lg:col-span-2 lg:justify-end"><Button variant="secondary" onClick={() => duplicateWorkout(protocol.id, workout)}>Duplicar treino</Button><Button onClick={() => startSession(protocol, workout)}>Iniciar sessão</Button></div>
                     </div>}
                   </div>;
                 })}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--background)] p-6 text-center"><p className="font-semibold">Nenhum treino criado</p><p className="mt-1 text-sm text-[var(--muted)]">Adicione o primeiro treino deste protocolo.</p></div>}
@@ -171,7 +202,7 @@ export default function WorkoutsPage() {
                   <div className="mt-5 grid gap-x-8 gap-y-4 lg:grid-cols-2">{protocolVolume.map((item) => <div key={item.muscle}><div className="mb-1.5 flex items-center justify-between gap-3 text-sm"><span className="font-medium">{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")} séries</strong></div><div className="h-3.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 via-blue-500 to-cyan-400" style={{ width: `${item.sets / maximumProtocolVolume * 100}%` }} /></div></div>)}</div>
                   <p className="mt-5 border-t border-blue-500/15 pt-4 text-xs text-[var(--muted)]">A visão macro considera todos os treinos uma vez. A projeção semanal será calculada posteriormente conforme a frequência planejada de cada treino.</p>
                 </div>}
-                <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary">Duplicar protocolo</Button><Button>{protocol.workouts.length ? "Editar prescrição" : "＋ Adicionar treino"}</Button></div>
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary" onClick={() => duplicateProtocol(protocol)}>Duplicar protocolo</Button><Button>{protocol.workouts.length ? "Editar prescrição" : "＋ Adicionar treino"}</Button></div>
               </div>}
             </Card>;
           })}
