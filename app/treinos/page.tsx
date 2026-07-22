@@ -146,10 +146,11 @@ function advancedMethodGuidance(exercise: Exercise) {
   };
   return {
     title: methods.length === 1 ? methods[0] : "Métodos combinados",
-    sequence: configurations.map((configuration, index) => {
+    sequence: configurations.flatMap((configuration, index) => {
+      if (configuration.method === "Convencional") return [];
       const repetitions = configuration.blocks?.join("+") || configuration.reps;
       const load = configuration.load ? ` · ${configuration.load}` : "";
-      return `S${index + 1}: ${configuration.method === "Convencional" ? "Normal" : configuration.method} ${repetitions}${load}`;
+      return [`S${index + 1}: ${configuration.method} ${repetitions}${load}`];
     }).join(" | "),
     description: methods.map((method) => descriptions[method]).join(" "),
   };
