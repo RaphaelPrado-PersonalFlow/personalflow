@@ -9,7 +9,8 @@ import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
 
 type AdvancedMethod = "Convencional" | "Drop-set" | "Rest-pause" | "Cluster set" | "Pirâmide" | "Myo-reps" | "Bi-set";
-type Exercise = { id: number; name: string; prescription: string; load: string; sets?: number; reps?: string; rest?: string; method?: AdvancedMethod; methodRounds?: number; methodValue?: string; seriesReps?: number[]; methodSeries?: number[] };
+type SeriesConfiguration = { method: AdvancedMethod; reps: string; load: string; blocks?: number[] };
+type Exercise = { id: number; name: string; prescription: string; load: string; sets?: number; reps?: string; rest?: string; method?: AdvancedMethod; methodRounds?: number; methodValue?: string; seriesReps?: number[]; methodSeries?: number[]; seriesConfigurations?: SeriesConfiguration[] };
 type MuscleVolume = { muscle: string; sets: number };
 type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[]; targetExecutions?: number; completedExecutions?: number };
 type Protocol = {
@@ -89,16 +90,52 @@ function repetitionsBySeries(exercise: Exercise, sets = exercise.sets ?? seriesF
   return Array.from({ length: sets }, (_, index) => existing[index] ?? fallback);
 }
 
-function advancedMethodGuidance(exercise: Exercise) {
-  const method = exercise.method ?? "Convencional";
-  if (method === "Convencional") return null;
-  const sets = exercise.sets ?? seriesFromPrescription(exercise.prescription);
+function defaultBlocks(method: AdvancedMethod) {
+  if (method === "Drop-set") return [4, 4, 4, 4];
+  if (method === "Cluster set") return [4, 4, 4];
+  if (method === "Rest-pause" || method === "Myo-reps") return [10, 4, 4];
+  return undefined;
+}
+
+function seriesConfigurations(exercise: Exercise, sets = exercise.sets ?? seriesFromPrescription(exercise.prescription)) {
   const repetitions = repetitionsBySeries(exercise, sets);
-  const selectedSeries = method === "Pirâmide"
-    ? repetitions.map((_, index) => index)
-    : exercise.methodSeries ?? [Math.max(sets - 1, 0)];
-  const seriesLabel = selectedSeries.map((index) => `${index + 1}ª`).join(" e ");
-  const sequence = repetitions.map((value, index) => `S${index + 1}: ${value}`).join(" · ");
+  return Array.from({ length: sets }, (_, index): SeriesConfiguration => {
+    const current = exercise.seriesConfigurations?.[index];
+    if (current) return { ...current, blocks: current.blocks ? [...current.blocks] : undefined };
+    const legacyMethod = exercise.method === "Pirâmide" || exercise.methodSeries?.includes(index)
+      ? exercise.method ?? "Convencional"
+      : "Convencional";
+    return { method: legacyMethod, reps: String(repetitions[index]), load: exercise.load, blocks: defaultBlocks(legacyMethod) };
+  });
+}
+
+function formatSeriesPrescription(configurations: SeriesConfiguration[]) {
+  const groups: { signature: string; count: number; configuration: SeriesConfiguration }[] = [];
+  configurations.forEach((configuration) => {
+    const detail = configuration.blocks?.join("+") || configuration.reps;
+    const signature = `${configuration.method}|${detail}|${configuration.load}`;
+    const previous = groups.at(-1);
+    if (previous?.signature === signature) previous.count += 1;
+    else groups.push({ signature, count: 1, configuration });
+  });
+  return groups.map(({ count, configuration }) => {
+    if (configuration.method === "Convencional") return `${count} × ${configuration.reps}`;
+    if (configuration.method === "Pirâmide") return `${count} × Pirâmide ${configuration.reps} rep · ${configuration.load}`;
+    const detail = configuration.blocks?.join("+") || configuration.reps;
+    return `${count} × ${configuration.method} ${detail}`;
+  }).join(" + ");
+}
+
+function exerciseMethodSummary(exercise: Exercise) {
+  const methods = [...new Set(seriesConfigurations(exercise).map((item) => item.method).filter((method) => method !== "Convencional"))];
+  return methods.length ? methods.join(" + ") : "Convencional";
+}
+
+function advancedMethodGuidance(exercise: Exercise) {
+  const configurations = seriesConfigurations(exercise);
+  const advancedConfigurations = configurations.filter((item) => item.method !== "Convencional");
+  if (advancedConfigurations.length === 0) return null;
+  const methods = [...new Set(advancedConfigurations.map((item) => item.method))] as Exclude<AdvancedMethod, "Convencional">[];
   const descriptions: Record<Exclude<AdvancedMethod, "Convencional">, string> = {
     "Drop-set": "Ao terminar a série, reduza a carga sem descanso e continue as repetições.",
     "Rest-pause": "Faça uma pausa curta dentro da série e retome até completar os blocos.",
@@ -108,9 +145,13 @@ function advancedMethodGuidance(exercise: Exercise) {
     "Bi-set": "Execute o exercício em sequência com o exercício combinado, sem descanso.",
   };
   return {
-    title: method === "Pirâmide" ? method : `${method} na ${seriesLabel} série`,
-    sequence,
-    description: descriptions[method],
+    title: methods.length === 1 ? methods[0] : "Métodos combinados",
+    sequence: configurations.map((configuration, index) => {
+      const repetitions = configuration.blocks?.join("+") || configuration.reps;
+      const load = configuration.load ? ` · ${configuration.load}` : "";
+      return `S${index + 1}: ${configuration.method === "Convencional" ? "Normal" : configuration.method} ${repetitions}${load}`;
+    }).join(" | "),
+    description: methods.map((method) => descriptions[method]).join(" "),
   };
 }
 
@@ -352,12 +393,53 @@ export default function WorkoutsPage() {
       if (exercise.id !== id) return exercise;
       const sets = field === "sets" ? Number(value) : exercise.sets ?? seriesFromPrescription(exercise.prescription);
       const reps = field === "reps" ? value : exercise.reps ?? repetitionsFromPrescription(exercise.prescription);
-      const seriesReps = repetitionsBySeries(exercise, sets);
-      const method = exercise.method ?? "Convencional";
-      const methodSeries = method === "Pirâmide"
-        ? seriesReps.map((_, index) => index)
-        : (exercise.methodSeries ?? [sets - 1]).filter((index) => index < sets);
-      return { ...exercise, sets, reps, seriesReps, methodSeries: methodSeries.length ? methodSeries : [sets - 1], prescription: `${sets} × ${method === "Convencional" ? reps : seriesReps.join("/")}` };
+      const configurations = seriesConfigurations(exercise, sets).map((configuration) => field === "reps" && configuration.method === "Convencional" ? { ...configuration, reps } : configuration);
+      return { ...exercise, sets, reps, seriesConfigurations: configurations, seriesReps: configurations.map((item) => Number(item.reps.match(/\d+/)?.[0] ?? 0)), prescription: formatSeriesPrescription(configurations) };
+    }));
+  }
+
+  function updateSeriesConfiguration(id: number, seriesIndex: number, field: "method" | "reps" | "load", value: string) {
+    setDraftExercises((current) => current.map((exercise) => {
+      if (exercise.id !== id) return exercise;
+      const sets = exercise.sets ?? seriesFromPrescription(exercise.prescription);
+      const configurations = seriesConfigurations(exercise, sets).map((configuration, index) => {
+        if (index !== seriesIndex) return configuration;
+        if (field === "method") {
+          const method = value as AdvancedMethod;
+          return { ...configuration, method, blocks: defaultBlocks(method) };
+        }
+        return { ...configuration, [field]: value };
+      });
+      const advanced = configurations.map((item, index) => item.method !== "Convencional" ? index : -1).filter((index) => index >= 0);
+      const firstAdvancedMethod = configurations.find((item) => item.method !== "Convencional")?.method ?? "Convencional";
+      return { ...exercise, seriesConfigurations: configurations, method: firstAdvancedMethod, methodSeries: advanced, seriesReps: configurations.map((item) => Number(item.reps.match(/\d+/)?.[0] ?? 0)), prescription: formatSeriesPrescription(configurations) };
+    }));
+  }
+
+  function updateSeriesBlock(id: number, seriesIndex: number, blockIndex: number, value: number) {
+    setDraftExercises((current) => current.map((exercise) => {
+      if (exercise.id !== id) return exercise;
+      const configurations = seriesConfigurations(exercise).map((configuration, index) => {
+        if (index !== seriesIndex) return configuration;
+        const blocks = [...(configuration.blocks ?? defaultBlocks(configuration.method) ?? [4, 4])];
+        blocks[blockIndex] = value;
+        return { ...configuration, blocks };
+      });
+      return { ...exercise, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
+    }));
+  }
+
+  function changeSeriesBlockCount(id: number, seriesIndex: number, direction: -1 | 1) {
+    setDraftExercises((current) => current.map((exercise) => {
+      if (exercise.id !== id) return exercise;
+      const configurations = seriesConfigurations(exercise).map((configuration, index) => {
+        if (index !== seriesIndex) return configuration;
+        const blocks = [...(configuration.blocks ?? defaultBlocks(configuration.method) ?? [4, 4])];
+        if (direction === 1 && blocks.length < 6) blocks.push(blocks.at(-1) ?? 4);
+        if (direction === -1 && blocks.length > 2) blocks.pop();
+        return { ...configuration, blocks };
+      });
+      return { ...exercise, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
     }));
   }
 
@@ -555,14 +637,13 @@ export default function WorkoutsPage() {
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {total.toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos</span></div>
                     <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => {
                       const open = active && expandedEditorExercise === exercise.id;
-                      const method = exercise.method ?? "Convencional";
                       const sets = exercise.sets ?? seriesFromPrescription(exercise.prescription);
-                      const seriesReps = repetitionsBySeries(exercise, sets);
-                      const selectedMethodSeries = exercise.methodSeries ?? [];
+                      const configurations = seriesConfigurations(exercise, sets);
+                      const methodSummary = exerciseMethodSummary(exercise);
                       return <div key={exercise.id} className={`overflow-hidden rounded-xl border ${open ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}>
-                        <button type="button" onClick={() => { if (!active) selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(open ? null : exercise.id); }} className="flex w-full items-center gap-3 p-3 text-left"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load} · {method}</span></span><span className={`transition-transform ${open ? "rotate-90" : ""}`}>›</span></button>
-                        {open && <div className="border-t border-blue-500/20 p-3"><div className="grid grid-cols-2 gap-2"><label className="text-[11px] text-[var(--muted)]">Séries<select value={sets} onChange={(event) => updateDraftExercisePrescription(exercise.id, "sets", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{[1,2,3,4,5,6].map((value) => <option key={value} value={value}>{value}×</option>)}</select></label><label className="text-[11px] text-[var(--muted)]">Repetições<input value={exercise.reps ?? repetitionsFromPrescription(exercise.prescription)} onChange={(event) => updateDraftExercisePrescription(exercise.id, "reps", event.target.value)} disabled={method !== "Convencional"} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm disabled:opacity-50" /></label><label className="text-[11px] text-[var(--muted)]">Carga<input value={exercise.load} onChange={(event) => updateDraftExercise(exercise.id, "load", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm" /></label><label className="text-[11px] text-[var(--muted)]">Descanso<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label></div><label className="mt-2 block text-[11px] text-[var(--muted)]">Método<select value={method} onChange={(event) => updateDraftMethod(exercise.id, event.target.value as AdvancedMethod)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select></label>
-                          {method !== "Convencional" && <div className="mt-3 rounded-xl border border-blue-500/20 bg-[var(--background)] p-2"><p className="text-[11px] font-semibold text-blue-500">Configuração por série</p><div className="mt-2 flex items-center gap-1.5 overflow-x-auto pb-1">{seriesReps.map((repetitions, seriesIndex) => { const applied = method === "Pirâmide" || selectedMethodSeries.includes(seriesIndex); return <div key={seriesIndex} className="flex shrink-0 items-center gap-1.5">{seriesIndex > 0 && <span className="text-[var(--muted)]">—</span>}<div className={`w-20 rounded-lg border p-1.5 text-center ${applied ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)]"}`}><button type="button" onClick={() => toggleMethodSeries(exercise.id, seriesIndex)} disabled={method === "Pirâmide"} className="w-full text-[10px] font-semibold">Série {seriesIndex + 1}<span className={`block ${applied ? "text-blue-500" : "text-[var(--muted)]"}`}>{applied ? method : "Normal"}</span></button><select value={repetitions} onChange={(event) => updateSeriesRepetitions(exercise.id, seriesIndex, Number(event.target.value))} className="mt-1 h-8 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-1 text-xs">{Array.from({length:20},(_,value)=>value+1).map((value)=><option key={value}>{value}</option>)}</select></div></div>; })}</div></div>}
+                        <button type="button" onClick={() => { if (!active) selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(open ? null : exercise.id); }} className="flex w-full items-center gap-3 p-3 text-left"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {methodSummary}</span></span><span className={`transition-transform ${open ? "rotate-90" : ""}`}>›</span></button>
+                        {open && <div className="border-t border-blue-500/20 p-3"><div className="grid grid-cols-2 gap-2"><label className="text-[11px] text-[var(--muted)]">Quantidade de séries<select value={sets} onChange={(event) => updateDraftExercisePrescription(exercise.id, "sets", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{[1,2,3,4,5,6].map((value) => <option key={value} value={value}>{value}×</option>)}</select></label><label className="text-[11px] text-[var(--muted)]">Descanso<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label></div>
+                          <div className="mt-3 space-y-2"><div><p className="text-[11px] font-semibold text-blue-500">Configuração individual das séries</p><p className="mt-0.5 text-[10px] leading-4 text-[var(--muted)]">Combine séries normais, drop-set, cluster, pirâmide e outros métodos no mesmo exercício.</p></div>{configurations.map((configuration, seriesIndex) => <div key={seriesIndex} className={`rounded-xl border p-2.5 ${configuration.method === "Convencional" ? "border-[var(--border)] bg-[var(--surface)]" : "border-violet-500/30 bg-violet-500/10"}`}><div className="flex items-center gap-2"><strong className="shrink-0 text-xs">Série {seriesIndex + 1}</strong><select aria-label={`Método da série ${seriesIndex + 1}`} value={configuration.method} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "method", event.target.value)} className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select></div><div className="mt-2 grid grid-cols-2 gap-2"><label className="text-[10px] text-[var(--muted)]">Repetições<input aria-label={`Repetições da série ${seriesIndex + 1}`} value={configuration.reps} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "reps", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label><label className="text-[10px] text-[var(--muted)]">Carga<input aria-label={`Carga da série ${seriesIndex + 1}`} value={configuration.load} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "load", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label></div>{configuration.blocks && <div className="mt-2 rounded-lg border border-violet-500/20 bg-[var(--background)] p-2"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-semibold text-violet-500">Blocos de repetições</span><div className="flex gap-1"><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, -1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">−</button><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, 1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">＋</button></div></div><div className="mt-2 flex items-center gap-1 overflow-x-auto">{configuration.blocks.map((block, blockIndex) => <div key={blockIndex} className="flex items-center gap-1">{blockIndex > 0 && <span className="font-semibold text-violet-500">＋</span>}<select aria-label={`Bloco ${blockIndex + 1} da série ${seriesIndex + 1}`} value={block} onChange={(event) => updateSeriesBlock(exercise.id, seriesIndex, blockIndex, Number(event.target.value))} className="h-8 w-12 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-1 text-center text-xs">{Array.from({length:20},(_,value)=>value+1).map((value)=><option key={value}>{value}</option>)}</select></div>)}</div></div>}</div>)}</div>
                           <div className="mt-3 flex justify-end gap-1"><button type="button" onClick={() => moveDraftExercise(index,-1)} disabled={index===0} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index,1)} disabled={index===draftExercises.length-1} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current)=>current.filter((entry)=>entry.id!==exercise.id))} className="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-500/10">Excluir</button></div>
                         </div>}
                       </div>;
