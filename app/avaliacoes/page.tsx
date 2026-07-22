@@ -60,7 +60,9 @@ export default function AssessmentsPage() {
   const [protocol, setProtocol] = useState<BodyFatProtocol>("Jackson-Pollock 3 dobras");
   const [calculatedBodyFat, setCalculatedBodyFat] = useState<number | null>(null);
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
-  const [selectedMetrics, setSelectedMetrics] = useState(["weight", "bodyFat", "leanMass"]);
+  const [selectedAssessmentIds, setSelectedAssessmentIds] = useState<number[]>([1, 2]);
+  const [circumferenceMetric, setCircumferenceMetric] = useState("sum");
+  const [skinfoldMetric, setSkinfoldMetric] = useState("sum");
 
   const studentAssessments = useMemo(
     () => assessments.filter((assessment) => assessment.student === selectedStudent),
@@ -92,6 +94,7 @@ export default function AssessmentsPage() {
     };
     setAssessments((current) => [newAssessment, ...current]);
     setSelectedStudent(student);
+    setSelectedAssessmentIds([newAssessment.id, ...assessments.filter((item) => item.student === student).map((item) => item.id)]);
     setModalOpen(false);
     setCalculatedBodyFat(null);
     setPhotoPreviews([]);
@@ -118,21 +121,56 @@ export default function AssessmentsPage() {
   const waistChange = latest && previous ? latest.waist - previous.waist : 0;
   const leanMassChange = latest && previous ? latest.leanMass - previous.leanMass : 0;
 
-  const chartMetricOptions = useMemo<ChartMetric[]>(() => [
-    { key: "weight", label: "Peso", unit: "kg", color: "#3b82f6", getValue: (assessment) => assessment.weight },
-    { key: "bodyFat", label: "Gordura corporal", unit: "%", color: "#8b5cf6", getValue: (assessment) => assessment.bodyFat },
-    { key: "leanMass", label: "Massa magra", unit: "kg", color: "#10b981", getValue: (assessment) => assessment.leanMass },
-    ...circumferenceFields.map(([key, label], index) => ({ key: `circumference-${key}`, label: `Circunferência · ${label}`, unit: "cm", color: ["#f59e0b", "#ef4444", "#06b6d4"][index % 3], getValue: (assessment: ChartAssessment) => assessment.circumferences?.[key] })),
-    ...skinfoldFields.map(([key, label], index) => ({ key: `skinfold-${key}`, label: `Dobra · ${label}`, unit: "mm", color: ["#ec4899", "#14b8a6", "#f97316"][index % 3], getValue: (assessment: ChartAssessment) => assessment.skinfolds?.[key] })),
+  const massMetrics = useMemo<ChartMetric[]>(() => [
+    { key: "weight", label: "Peso total", unit: "kg", color: "#3b82f6", getValue: (assessment) => assessment.weight },
+    { key: "fatMass", label: "Peso de gordura", unit: "kg", color: "#f97316", getValue: (assessment) => Number((assessment.weight * assessment.bodyFat / 100).toFixed(1)) },
+    { key: "leanMass", label: "Peso de massa magra", unit: "kg", color: "#10b981", getValue: (assessment) => assessment.leanMass },
   ], []);
 
-  const activeChartMetrics = selectedMetrics.map((key, index) => {
-    const metric = chartMetricOptions.find((option) => option.key === key);
-    return metric ? { ...metric, color: ["#3b82f6", "#8b5cf6", "#10b981"][index] } : null;
-  }).filter((metric): metric is ChartMetric => metric !== null);
+  const bodyFatMetrics = useMemo<ChartMetric[]>(() => [
+    { key: "bodyFat", label: "Percentual de gordura", unit: "%", color: "#8b5cf6", getValue: (assessment) => assessment.bodyFat },
+  ], []);
 
-  function selectChartMetric(position: number, value: string) {
-    setSelectedMetrics((current) => current.map((metric, index) => index === position ? value : metric));
+  const circumferenceOptions = useMemo(() => [["sum", "Somatório das circunferências"], ...circumferenceFields] as [string, string][], []);
+  const skinfoldOptions = useMemo(() => [["sum", "Somatório das dobras cutâneas"], ...skinfoldFields] as [string, string][], []);
+
+  const circumferenceChartMetric = useMemo<ChartMetric[]>(() => {
+    const label = circumferenceOptions.find(([key]) => key === circumferenceMetric)?.[1] ?? "Circunferência";
+    return [{
+      key: `circumference-${circumferenceMetric}`,
+      label,
+      unit: "cm",
+      color: "#06b6d4",
+      getValue: (assessment: ChartAssessment) => circumferenceMetric === "sum"
+        ? Object.values(assessment.circumferences ?? {}).reduce((total, value) => total + (value > 0 ? value : 0), 0) || undefined
+        : assessment.circumferences?.[circumferenceMetric],
+    }];
+  }, [circumferenceMetric, circumferenceOptions]);
+
+  const skinfoldChartMetric = useMemo<ChartMetric[]>(() => {
+    const label = skinfoldOptions.find(([key]) => key === skinfoldMetric)?.[1] ?? "Dobra cutânea";
+    return [{
+      key: `skinfold-${skinfoldMetric}`,
+      label,
+      unit: "mm",
+      color: "#ec4899",
+      getValue: (assessment: ChartAssessment) => skinfoldMetric === "sum"
+        ? Object.values(assessment.skinfolds ?? {}).reduce((total, value) => total + (value > 0 ? value : 0), 0) || undefined
+        : assessment.skinfolds?.[skinfoldMetric],
+    }];
+  }, [skinfoldMetric, skinfoldOptions]);
+
+  const comparedAssessments = studentAssessments.filter((assessment) => selectedAssessmentIds.includes(assessment.id));
+
+  function toggleAssessment(id: number) {
+    setSelectedAssessmentIds((current) => current.includes(id)
+      ? current.length === 1 ? current : current.filter((item) => item !== id)
+      : [...current, id]);
+  }
+
+  function changeSelectedStudent(student: string) {
+    setSelectedStudent(student);
+    setSelectedAssessmentIds(assessments.filter((assessment) => assessment.student === student).map((assessment) => assessment.id));
   }
 
   return (
@@ -142,7 +180,7 @@ export default function AssessmentsPage() {
 
         <Card className="p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div><p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Aluno selecionado</p><select value={selectedStudent} onChange={(event) => setSelectedStudent(event.target.value)} className="mt-2 h-11 min-w-64 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-semibold outline-none focus:border-blue-500">{students.map((student) => <option key={student}>{student}</option>)}</select></div>
+            <div><p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Aluno selecionado</p><select value={selectedStudent} onChange={(event) => changeSelectedStudent(event.target.value)} className="mt-2 h-11 min-w-64 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-semibold outline-none focus:border-blue-500">{students.map((student) => <option key={student}>{student}</option>)}</select></div>
             <div className="flex items-center gap-2"><Badge tone={latest ? "success" : "warning"}>{latest ? `${studentAssessments.length} avaliações` : "Sem avaliação"}</Badge>{latest && <span className="text-sm text-[var(--muted)]">Última em {latest.date}</span>}</div>
           </div>
         </Card>
@@ -155,16 +193,49 @@ export default function AssessmentsPage() {
             <StatCard title="Massa magra" value={formatNumber(latest.leanMass, " kg")} detail={previous ? `${leanMassChange > 0 ? "+" : ""}${formatNumber(leanMassChange, " kg")} desde a anterior` : "Primeira avaliação"} tone="amber" />
           </section>
 
-          <section className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+          <section className="space-y-6">
             <Card>
               <div className="flex flex-col gap-4">
-                <div className="flex items-center justify-between"><div><h2 className="font-semibold">Evolução corporal</h2><p className="mt-1 text-sm text-[var(--muted)]">Escolha até três indicadores para comparar</p></div><Badge tone="info">{selectedStudent}</Badge></div>
-                <div className="grid gap-2 sm:grid-cols-3">
-                  {selectedMetrics.map((selected, index) => <label key={index} className="text-xs font-medium text-[var(--muted)]">Medida {index + 1}<select value={selected} onChange={(event) => selectChartMetric(index, event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-blue-500"><option value="">Nenhuma</option>{chartMetricOptions.map((metric) => <option key={metric.key} value={metric.key} disabled={selectedMetrics.some((item, itemIndex) => item === metric.key && itemIndex !== index)}>{metric.label}</option>)}</select></label>)}
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div><h2 className="font-semibold">Avaliações para comparar</h2><p className="mt-1 text-sm text-[var(--muted)]">Marque uma ou mais avaliações. Todos os gráficos usarão o mesmo período.</p></div>
+                  <Badge tone="info">{selectedStudent}</Badge>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {studentAssessments.map((assessment) => {
+                    const selected = selectedAssessmentIds.includes(assessment.id);
+                    return <button key={assessment.id} type="button" onClick={() => toggleAssessment(assessment.id)} aria-pressed={selected} className={`rounded-xl border px-4 py-3 text-left transition ${selected ? "border-blue-500 bg-blue-500/10 text-blue-500" : "border-[var(--border)] bg-[var(--background)] text-[var(--muted)] hover:border-blue-500/60"}`}><span className="block text-sm font-semibold">{assessment.date}</span><span className="mt-0.5 block text-xs">{assessment.type}</span></button>;
+                  })}
                 </div>
               </div>
-              <div className="mt-6"><EvolutionChart assessments={studentAssessments} metrics={activeChartMetrics} /></div>
             </Card>
+
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Card>
+                <div><h2 className="font-semibold">Composição corporal em peso</h2><p className="mt-1 text-sm text-[var(--muted)]">Peso total, peso de gordura e peso de massa magra</p></div>
+                <div className="mt-6"><EvolutionChart assessments={comparedAssessments} metrics={massMetrics} /></div>
+              </Card>
+
+              <Card>
+                <div><h2 className="font-semibold">Percentual de gordura</h2><p className="mt-1 text-sm text-[var(--muted)]">Evolução do percentual de gordura corporal</p></div>
+                <div className="mt-6"><EvolutionChart assessments={comparedAssessments} metrics={bodyFatMetrics} /></div>
+              </Card>
+
+              <Card>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div><h2 className="font-semibold">Circunferências</h2><p className="mt-1 text-sm text-[var(--muted)]">Escolha uma medida ou o somatório</p></div>
+                  <label className="text-xs font-medium text-[var(--muted)]">Medida<select value={circumferenceMetric} onChange={(event) => setCircumferenceMetric(event.target.value)} className="mt-1.5 h-10 w-full min-w-64 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-blue-500">{circumferenceOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+                </div>
+                <div className="mt-6"><EvolutionChart assessments={comparedAssessments} metrics={circumferenceChartMetric} /></div>
+              </Card>
+
+              <Card>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div><h2 className="font-semibold">Dobras cutâneas</h2><p className="mt-1 text-sm text-[var(--muted)]">Escolha uma dobra ou o somatório</p></div>
+                  <label className="text-xs font-medium text-[var(--muted)]">Medida<select value={skinfoldMetric} onChange={(event) => setSkinfoldMetric(event.target.value)} className="mt-1.5 h-10 w-full min-w-64 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-blue-500">{skinfoldOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+                </div>
+                <div className="mt-6"><EvolutionChart assessments={comparedAssessments} metrics={skinfoldChartMetric} /></div>
+              </Card>
+            </div>
 
             <Card className="overflow-hidden p-0">
               <div className="border-b border-[var(--border)] p-5"><h2 className="font-semibold">Histórico</h2><p className="mt-1 text-sm text-[var(--muted)]">Avaliações mais recentes</p></div>
