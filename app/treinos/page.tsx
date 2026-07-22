@@ -129,6 +129,14 @@ export default function WorkoutsPage() {
         <section className="space-y-4">
           {filteredProtocols.map((protocol) => {
             const isExpanded = expanded.includes(protocol.id);
+            const protocolVolume = Object.entries(
+              protocol.workouts.flatMap((workout) => workout.volume).reduce<Record<string, number>>((totals, item) => {
+                totals[item.muscle] = (totals[item.muscle] ?? 0) + item.sets;
+                return totals;
+              }, {}),
+            ).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
+            const maximumProtocolVolume = Math.max(...protocolVolume.map((item) => item.sets), 1);
+            const totalProtocolVolume = protocolVolume.reduce((total, item) => total + item.sets, 0);
             return <Card key={protocol.id} className="overflow-hidden p-0">
               <div className="flex items-center gap-3 p-4 sm:p-5">
                 <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-blue-500/10 font-bold text-blue-500">{protocol.student.split(" ").slice(0, 2).map((part) => part[0]).join("")}</div>
@@ -158,6 +166,11 @@ export default function WorkoutsPage() {
                     </div>}
                   </div>;
                 })}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--background)] p-6 text-center"><p className="font-semibold">Nenhum treino criado</p><p className="mt-1 text-sm text-[var(--muted)]">Adicione o primeiro treino deste protocolo.</p></div>}
+                {protocolVolume.length > 0 && <div className="mt-5 rounded-2xl border border-blue-500/20 bg-gradient-to-br from-blue-500/10 to-cyan-500/5 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Visão macro</p><h3 className="mt-1 font-semibold">Volume total do protocolo</h3><p className="mt-1 text-sm text-[var(--muted)]">Soma dos grupos musculares presentes em todos os treinos</p></div><div className="rounded-xl border border-blue-500/20 bg-[var(--background)] px-4 py-2 text-right"><p className="text-2xl font-semibold text-blue-500">{totalProtocolVolume.toLocaleString("pt-BR")}</p><p className="text-xs text-[var(--muted)]">séries equivalentes</p></div></div>
+                  <div className="mt-5 grid gap-x-8 gap-y-4 lg:grid-cols-2">{protocolVolume.map((item) => <div key={item.muscle}><div className="mb-1.5 flex items-center justify-between gap-3 text-sm"><span className="font-medium">{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")} séries</strong></div><div className="h-3.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 via-blue-500 to-cyan-400" style={{ width: `${item.sets / maximumProtocolVolume * 100}%` }} /></div></div>)}</div>
+                  <p className="mt-5 border-t border-blue-500/15 pt-4 text-xs text-[var(--muted)]">A visão macro considera todos os treinos uma vez. A projeção semanal será calculada posteriormente conforme a frequência planejada de cada treino.</p>
+                </div>}
                 <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary">Duplicar protocolo</Button><Button>{protocol.workouts.length ? "Editar prescrição" : "＋ Adicionar treino"}</Button></div>
               </div>}
             </Card>;
