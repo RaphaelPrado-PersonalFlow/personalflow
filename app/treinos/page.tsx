@@ -128,6 +128,7 @@ export default function WorkoutsPage() {
   const [exerciseToAdd, setExerciseToAdd] = useState(exerciseCatalog[0].name);
   const [expandedEditorExercise, setExpandedEditorExercise] = useState<number | null>(null);
   const [editingWorkoutDetails, setEditingWorkoutDetails] = useState<number | null>(null);
+  const [workoutToDeleteInEditor, setWorkoutToDeleteInEditor] = useState<number | null>(null);
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: number } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
 
@@ -262,6 +263,25 @@ export default function WorkoutsPage() {
     setDraftExercises([]);
     setExpandedEditorExercise(null);
     setEditingWorkoutDetails(id);
+  }
+
+  function deleteWorkoutFromEditor(protocol: Protocol, workoutId: number) {
+    const remaining = protocol.workouts.filter((workout) => workout.id !== workoutId);
+    if (remaining.length === 0) return;
+    setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: item.workouts.filter((workout) => workout.id !== workoutId) } : item));
+    setWorkoutDrafts((current) => {
+      const next = { ...current };
+      delete next[workoutId];
+      return next;
+    });
+    if (prescriptionEditor?.workoutId === workoutId) {
+      const nextWorkout = remaining[0];
+      setPrescriptionEditor({ protocolId: protocol.id, workoutId: nextWorkout.id });
+      setDraftExercises((workoutDrafts[nextWorkout.id] ?? nextWorkout.exercises).map((exercise) => ({ ...exercise })));
+    }
+    setExpandedEditorExercise(null);
+    setEditingWorkoutDetails(null);
+    setWorkoutToDeleteInEditor(null);
   }
 
   function updateDraftExercise(id: number, field: "load" | "rest" | "methodValue", value: string) {
@@ -440,21 +460,21 @@ export default function WorkoutsPage() {
         const protocolTotal = protocolVolume.reduce((total, item) => total + item.sets, 0);
         const protocolMaximum = Math.max(...protocolVolume.map((item) => item.sets), 1);
 
-        return <div className="fixed inset-0 z-[65] overflow-y-auto bg-slate-950/90 p-2 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="prescription-board-title">
-          <div onClick={() => volumeView && setVolumeView(null)} className="relative mx-auto my-2 w-full max-w-[1600px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl">
-            <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--surface)] p-4 sm:px-6">
+        return <div className="fixed inset-0 z-[65] bg-slate-950/90 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="prescription-board-title">
+          <div onClick={() => volumeView && setVolumeView(null)} className="relative mx-auto flex h-[100dvh] w-full max-w-[1600px] flex-col overflow-hidden bg-[var(--surface)] shadow-2xl sm:h-[calc(100dvh-2.5rem)] sm:rounded-2xl sm:border sm:border-[var(--border)]">
+            <header className="z-20 flex shrink-0 flex-col gap-3 border-b border-[var(--border)] bg-[var(--surface)] p-4 text-[var(--foreground)] sm:flex-row sm:items-center sm:justify-between sm:px-6">
               <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor semanal de prescrição</p><h2 id="prescription-board-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.frequency}× por semana</p></div>
-              <div className="flex items-center gap-2"><button type="button" onClick={(event) => { event.stopPropagation(); setVolumeView({ scope: "protocol" }); }} className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-left text-xs text-blue-500"><strong className="block text-sm">{protocolTotal.toLocaleString("pt-BR")} séries · {protocolVolume.length} grupos</strong><span>Revisar volume semanal</span></button><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-10 place-items-center rounded-xl hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
+              <div className="flex items-stretch gap-2"><button type="button" onClick={(event) => { event.stopPropagation(); setVolumeView({ scope: "protocol" }); }} className="min-w-0 flex-1 rounded-xl border border-blue-600 bg-blue-600 px-3 py-2 text-left text-xs text-white shadow-lg shadow-blue-600/20 sm:flex-none"><strong className="block text-sm">{protocolTotal.toLocaleString("pt-BR")} séries · {protocolVolume.length} grupos</strong><span>Revisar volume semanal</span></button><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
             </header>
 
-            <section className="p-4 sm:p-6"><div className="mb-4"><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Clique em um exercício para abrir ou recolher seus campos de prescrição.</p></div>
+            <section className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"><div className="mb-4"><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Clique em um exercício para abrir ou recolher seus campos de prescrição.</p></div>
               <div className="overflow-x-auto pb-2"><div className="grid auto-cols-[310px] grid-flow-col items-start gap-4 xl:auto-cols-[minmax(300px,1fr)]">
                 {editorWorkouts.map((item) => {
                   const active = item.id === activeWorkout.id;
                   const total = item.volume.reduce((sum, volume) => sum + volume.sets, 0);
                   const maximum = Math.max(...item.volume.map((volume) => volume.sets), 1);
                   return <article key={item.id} className={`rounded-2xl border p-3 ${active ? "border-blue-500 bg-blue-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}>
-                    <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome e foco de ${item.name}`}>✎</button></div>
+                    <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome e foco de ${item.name}`}>✎</button><button type="button" onClick={() => setWorkoutToDeleteInEditor(item.id)} disabled={editorWorkouts.length === 1} className="grid size-7 shrink-0 place-items-center rounded-lg border border-red-500/30 bg-red-500/10 text-xs text-red-500 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Excluir ${item.name}`}>×</button></div>
                     {active && editingWorkoutDetails === item.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><label className="text-[11px] text-[var(--muted)]">Nome do treino<input value={item.name} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Foco ou descrição<input value={item.focus} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "focus", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><button type="button" onClick={() => setEditingWorkoutDetails(null)} className="justify-self-end rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white">Concluir</button></div>}
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {total.toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos</span></div>
                     <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => {
@@ -479,8 +499,9 @@ export default function WorkoutsPage() {
               </div></div>
             </section>
 
+            {workoutToDeleteInEditor !== null && (() => { const target = editorWorkouts.find((item) => item.id === workoutToDeleteInEditor); if (!target) return null; return <div className="absolute inset-0 z-40 grid place-items-center bg-slate-950/70 p-4" onClick={() => setWorkoutToDeleteInEditor(null)}><div className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 text-[var(--foreground)] shadow-2xl" onClick={(event) => event.stopPropagation()}><p className="text-xs font-semibold uppercase tracking-wider text-red-500">Excluir treino</p><h3 className="mt-2 text-lg font-semibold">Excluir {target.name}?</h3><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Os exercícios e o volume deste treino serão removidos da prescrição semanal.</p><div className="mt-5 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={() => setWorkoutToDeleteInEditor(null)}>Cancelar</Button><button type="button" onClick={() => deleteWorkoutFromEditor(protocol, target.id)} className="h-10 rounded-xl bg-red-600 px-4 text-sm font-semibold text-white hover:bg-red-500">Excluir treino</button></div></div></div>; })()}
             {volumeView?.scope === "protocol" && <div className="absolute right-4 top-24 z-30 w-[min(420px,calc(100%-2rem))] rounded-2xl border border-blue-500/30 bg-[var(--surface)] p-4 shadow-2xl sm:right-6" onClick={(event)=>event.stopPropagation()}><div className="flex items-start justify-between"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Revisão geral</p><h3 className="mt-1 font-semibold">Volume semanal do protocolo</h3></div><button type="button" onClick={()=>setVolumeView(null)} className="grid size-8 place-items-center rounded-lg hover:bg-[var(--surface-raised)]">×</button></div><div className="mt-2"><Badge tone="info">{protocolTotal.toLocaleString("pt-BR")} séries · {protocolVolume.length} grupos</Badge></div><div className="mt-4 max-h-[55vh] space-y-3 overflow-y-auto pr-1">{protocolVolume.map((item)=><div key={item.muscle}><div className="mb-1 flex justify-between text-sm"><span>{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")}</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{width:`${item.sets/protocolMaximum*100}%`}}/></div></div>)}</div><p className="border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--muted)]">Use esta visão para revisar a distribuição geral enquanto prescreve a semana.</p></div>}
-            <footer className="sticky bottom-0 z-20 flex flex-col-reverse gap-2 border-t border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:justify-end sm:px-6"><Button variant="ghost" onClick={()=>setPrescriptionEditor(null)}>Cancelar</Button><Button onClick={savePrescription}>Salvar prescrição semanal</Button></footer>
+            <footer className="z-20 grid shrink-0 grid-cols-2 gap-2 border-t border-[var(--border)] bg-[var(--surface)] p-3 text-[var(--foreground)] sm:flex sm:justify-end sm:px-6"><Button variant="secondary" className="border-slate-400/40 bg-[var(--surface-raised)] text-[var(--foreground)]" onClick={()=>setPrescriptionEditor(null)}>Cancelar</Button><Button className="bg-blue-600 text-white" onClick={savePrescription}>Salvar prescrição semanal</Button></footer>
           </div>
         </div>;
       })()}
