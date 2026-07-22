@@ -12,9 +12,11 @@ export type BodyCompositionInput = {
 
 export const circumferenceFields = [
   ["neck", "Pescoço"], ["shoulder", "Ombro"], ["chest", "Tórax"],
-  ["relaxedArm", "Braço relaxado"], ["contractedArm", "Braço contraído"],
+  ["rightRelaxedArm", "Braço direito relaxado"], ["rightContractedArm", "Braço direito contraído"],
+  ["leftRelaxedArm", "Braço esquerdo relaxado"], ["leftContractedArm", "Braço esquerdo contraído"],
   ["forearm", "Antebraço"], ["waist", "Cintura"], ["abdomen", "Abdômen"],
-  ["hip", "Quadril"], ["midThigh", "Coxa média"], ["calf", "Panturrilha"],
+  ["hip", "Quadril"], ["rightMidThigh", "Coxa média direita"], ["leftMidThigh", "Coxa média esquerda"],
+  ["rightCalf", "Panturrilha direita"], ["leftCalf", "Panturrilha esquerda"],
 ] as const;
 
 export const skinfoldFields = [

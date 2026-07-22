@@ -7,6 +7,7 @@ import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
+import EvolutionChart, { ChartAssessment, ChartMetric } from "@/components/evaluations/EvolutionChart";
 import {
   BodyFatProtocol,
   BiologicalSex,
@@ -38,8 +39,8 @@ type Assessment = {
 const students = ["João Mendes", "Mariana Costa", "Carlos Lima", "Ana Souza", "Paulo Rocha", "Beatriz Alves"];
 
 const initialAssessments: Assessment[] = [
-  { id: 1, student: "João Mendes", date: "18/07/2026", type: "Reavaliação", weight: 81.2, height: 1.78, bodyFat: 15.8, waist: 84, leanMass: 68.4 },
-  { id: 2, student: "João Mendes", date: "15/04/2026", type: "Inicial", weight: 84.6, height: 1.78, bodyFat: 18.9, waist: 89, leanMass: 68.6 },
+  { id: 1, student: "João Mendes", date: "18/07/2026", type: "Reavaliação", weight: 81.2, height: 1.78, bodyFat: 15.8, waist: 84, leanMass: 68.4, circumferences: { neck: 38, waist: 84, abdomen: 87, hip: 99, rightContractedArm: 37, leftContractedArm: 36.5, rightMidThigh: 58, leftMidThigh: 57.5, rightCalf: 39, leftCalf: 38.5 }, skinfolds: { triceps: 11, chest: 9, abdomen: 18, suprailiac: 12, thigh: 15 } },
+  { id: 2, student: "João Mendes", date: "15/04/2026", type: "Inicial", weight: 84.6, height: 1.78, bodyFat: 18.9, waist: 89, leanMass: 68.6, circumferences: { neck: 39, waist: 89, abdomen: 93, hip: 102, rightContractedArm: 36, leftContractedArm: 35.5, rightMidThigh: 60, leftMidThigh: 59.5, rightCalf: 40, leftCalf: 39.5 }, skinfolds: { triceps: 14, chest: 12, abdomen: 24, suprailiac: 16, thigh: 19 } },
   { id: 3, student: "Mariana Costa", date: "12/07/2026", type: "Reavaliação", weight: 65.8, height: 1.64, bodyFat: 25.2, waist: 73, leanMass: 49.2 },
   { id: 4, student: "Mariana Costa", date: "10/04/2026", type: "Inicial", weight: 69.1, height: 1.64, bodyFat: 28.4, waist: 78, leanMass: 49.5 },
   { id: 5, student: "Ana Souza", date: "02/07/2026", type: "Inicial", weight: 58.4, height: 1.62, bodyFat: 21.7, waist: 68, leanMass: 45.7 },
@@ -59,6 +60,7 @@ export default function AssessmentsPage() {
   const [protocol, setProtocol] = useState<BodyFatProtocol>("Jackson-Pollock 3 dobras");
   const [calculatedBodyFat, setCalculatedBodyFat] = useState<number | null>(null);
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
+  const [selectedMetrics, setSelectedMetrics] = useState(["weight", "bodyFat", "leanMass"]);
 
   const studentAssessments = useMemo(
     () => assessments.filter((assessment) => assessment.student === selectedStudent),
@@ -114,7 +116,24 @@ export default function AssessmentsPage() {
   const weightChange = latest && previous ? latest.weight - previous.weight : 0;
   const fatChange = latest && previous ? latest.bodyFat - previous.bodyFat : 0;
   const waistChange = latest && previous ? latest.waist - previous.waist : 0;
-  const bmi = latest ? latest.weight / (latest.height * latest.height) : 0;
+  const leanMassChange = latest && previous ? latest.leanMass - previous.leanMass : 0;
+
+  const chartMetricOptions = useMemo<ChartMetric[]>(() => [
+    { key: "weight", label: "Peso", unit: "kg", color: "#3b82f6", getValue: (assessment) => assessment.weight },
+    { key: "bodyFat", label: "Gordura corporal", unit: "%", color: "#8b5cf6", getValue: (assessment) => assessment.bodyFat },
+    { key: "leanMass", label: "Massa magra", unit: "kg", color: "#10b981", getValue: (assessment) => assessment.leanMass },
+    ...circumferenceFields.map(([key, label], index) => ({ key: `circumference-${key}`, label: `Circunferência · ${label}`, unit: "cm", color: ["#f59e0b", "#ef4444", "#06b6d4"][index % 3], getValue: (assessment: ChartAssessment) => assessment.circumferences?.[key] })),
+    ...skinfoldFields.map(([key, label], index) => ({ key: `skinfold-${key}`, label: `Dobra · ${label}`, unit: "mm", color: ["#ec4899", "#14b8a6", "#f97316"][index % 3], getValue: (assessment: ChartAssessment) => assessment.skinfolds?.[key] })),
+  ], []);
+
+  const activeChartMetrics = selectedMetrics.map((key, index) => {
+    const metric = chartMetricOptions.find((option) => option.key === key);
+    return metric ? { ...metric, color: ["#3b82f6", "#8b5cf6", "#10b981"][index] } : null;
+  }).filter((metric): metric is ChartMetric => metric !== null);
+
+  function selectChartMetric(position: number, value: string) {
+    setSelectedMetrics((current) => current.map((metric, index) => index === position ? value : metric));
+  }
 
   return (
     <MainLayout>
@@ -133,21 +152,18 @@ export default function AssessmentsPage() {
             <StatCard title="Peso atual" value={formatNumber(latest.weight, " kg")} detail={previous ? `${weightChange > 0 ? "+" : ""}${formatNumber(weightChange, " kg")} desde a anterior` : "Primeira avaliação"} tone="blue" />
             <StatCard title="Gordura corporal" value={formatNumber(latest.bodyFat, "%")} detail={previous ? `${fatChange > 0 ? "+" : ""}${formatNumber(fatChange, " p.p.")} desde a anterior` : "Primeira avaliação"} tone="violet" />
             <StatCard title="Cintura" value={formatNumber(latest.waist, " cm")} detail={previous ? `${waistChange > 0 ? "+" : ""}${formatNumber(waistChange, " cm")} desde a anterior` : "Primeira avaliação"} tone="green" />
-            <StatCard title="IMC" value={formatNumber(bmi)} detail="Indicador de referência" tone="amber" />
+            <StatCard title="Massa magra" value={formatNumber(latest.leanMass, " kg")} detail={previous ? `${leanMassChange > 0 ? "+" : ""}${formatNumber(leanMassChange, " kg")} desde a anterior` : "Primeira avaliação"} tone="amber" />
           </section>
 
           <section className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
             <Card>
-              <div className="flex items-center justify-between"><div><h2 className="font-semibold">Evolução corporal</h2><p className="mt-1 text-sm text-[var(--muted)]">Comparação entre avaliações registradas</p></div><Badge tone="info">{selectedStudent}</Badge></div>
-              <div className="mt-6 space-y-5">
-                {[
-                  { label: "Peso", current: latest.weight, previous: previous?.weight, unit: "kg", max: 120 },
-                  { label: "Gordura corporal", current: latest.bodyFat, previous: previous?.bodyFat, unit: "%", max: 40 },
-                  { label: "Cintura", current: latest.waist, previous: previous?.waist, unit: "cm", max: 120 },
-                  { label: "Massa livre de gordura", current: latest.leanMass, previous: previous?.leanMass, unit: "kg", max: 90 },
-                ].map((metric) => <div key={metric.label}><div className="flex items-center justify-between text-sm"><span className="text-[var(--muted)]">{metric.label}</span><span className="font-semibold">{formatNumber(metric.current, ` ${metric.unit}`)}</span></div><div className="relative mt-2 h-2 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="absolute h-full rounded-full bg-blue-500" style={{ width: `${Math.min(100, metric.current / metric.max * 100)}%` }} />{metric.previous && <div className="absolute top-0 h-full w-0.5 bg-white/80" style={{ left: `${Math.min(100, metric.previous / metric.max * 100)}%` }} />}</div></div>)}
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between"><div><h2 className="font-semibold">Evolução corporal</h2><p className="mt-1 text-sm text-[var(--muted)]">Escolha até três indicadores para comparar</p></div><Badge tone="info">{selectedStudent}</Badge></div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {selectedMetrics.map((selected, index) => <label key={index} className="text-xs font-medium text-[var(--muted)]">Medida {index + 1}<select value={selected} onChange={(event) => selectChartMetric(index, event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-blue-500"><option value="">Nenhuma</option>{chartMetricOptions.map((metric) => <option key={metric.key} value={metric.key} disabled={selectedMetrics.some((item, itemIndex) => item === metric.key && itemIndex !== index)}>{metric.label}</option>)}</select></label>)}
+                </div>
               </div>
-              <p className="mt-5 text-xs text-[var(--muted)]">A marca clara representa o valor da avaliação anterior.</p>
+              <div className="mt-6"><EvolutionChart assessments={studentAssessments} metrics={activeChartMetrics} /></div>
             </Card>
 
             <Card className="overflow-hidden p-0">
