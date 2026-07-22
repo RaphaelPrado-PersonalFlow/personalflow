@@ -127,6 +127,7 @@ export default function WorkoutsPage() {
   const [workoutDrafts, setWorkoutDrafts] = useState<Record<number, Exercise[]>>({});
   const [exerciseToAdd, setExerciseToAdd] = useState(exerciseCatalog[0].name);
   const [expandedEditorExercise, setExpandedEditorExercise] = useState<number | null>(null);
+  const [editingWorkoutDetails, setEditingWorkoutDetails] = useState<number | null>(null);
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: number } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
 
@@ -230,6 +231,7 @@ export default function WorkoutsPage() {
     setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
     setWorkoutDrafts(Object.fromEntries((protocol?.workouts ?? []).map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
     setExpandedEditorExercise(null);
+    setEditingWorkoutDetails(null);
     setVolumeView(null);
   }
 
@@ -242,6 +244,24 @@ export default function WorkoutsPage() {
     setPrescriptionEditor({ protocolId, workoutId });
     setDraftExercises((workoutDrafts[workoutId] ?? workout.exercises).map((exercise) => ({ ...exercise })));
     setExpandedEditorExercise(null);
+  }
+
+  function updateWorkoutDetails(protocolId: number, workoutId: number, field: "name" | "focus", value: string) {
+    setProtocols((current) => current.map((protocol) => protocol.id === protocolId
+      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === workoutId ? { ...workout, [field]: value } : workout) }
+      : protocol));
+  }
+
+  function addWorkoutFromEditor(protocol: Protocol) {
+    if (!prescriptionEditor) return;
+    const id = Math.max(...protocols.flatMap((item) => item.workouts.map((workout) => workout.id)), 0) + 1;
+    const workout: Workout = { id, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 50, exercises: [], volume: [] };
+    setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises, [id]: [] }));
+    setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, workout] } : item));
+    setPrescriptionEditor({ protocolId: protocol.id, workoutId: id });
+    setDraftExercises([]);
+    setExpandedEditorExercise(null);
+    setEditingWorkoutDetails(id);
   }
 
   function updateDraftExercise(id: number, field: "load" | "rest" | "methodValue", value: string) {
@@ -434,7 +454,8 @@ export default function WorkoutsPage() {
                   const total = item.volume.reduce((sum, volume) => sum + volume.sets, 0);
                   const maximum = Math.max(...item.volume.map((volume) => volume.sets), 1);
                   return <article key={item.id} className={`rounded-2xl border p-3 ${active ? "border-blue-500 bg-blue-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}>
-                    <button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="flex w-full items-start justify-between gap-2 text-left"><span><strong className="block">{item.name}</strong><span className="text-xs text-[var(--muted)]">{item.focus}</span></span><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge></button>
+                    <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome e foco de ${item.name}`}>✎</button></div>
+                    {active && editingWorkoutDetails === item.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><label className="text-[11px] text-[var(--muted)]">Nome do treino<input value={item.name} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Foco ou descrição<input value={item.focus} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "focus", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><button type="button" onClick={() => setEditingWorkoutDetails(null)} className="justify-self-end rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white">Concluir</button></div>}
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {total.toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos</span></div>
                     <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => {
                       const open = active && expandedEditorExercise === exercise.id;
@@ -454,6 +475,7 @@ export default function WorkoutsPage() {
                     <div className="mt-4 border-t border-[var(--border)] pt-3"><div className="mb-3 flex items-center justify-between"><div><p className="text-xs font-semibold">Volume do treino</p><p className="text-[11px] text-[var(--muted)]">Distribuição por grupo muscular</p></div><Badge tone="info">{total.toLocaleString("pt-BR")} séries</Badge></div><div className="space-y-2.5">{item.volume.map((volume)=><div key={volume.muscle}><div className="mb-1 flex justify-between text-xs"><span>{volume.muscle}</span><strong>{volume.sets.toLocaleString("pt-BR")}</strong></div><div className="h-2.5 overflow-hidden rounded-full bg-[var(--surface)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{width:`${volume.sets/maximum*100}%`}}/></div></div>)}</div></div>
                   </article>;
                 })}
+                <button type="button" onClick={() => addWorkoutFromEditor(protocol)} className="flex min-h-48 flex-col items-center justify-center rounded-2xl border border-dashed border-blue-500/40 bg-blue-500/5 p-6 text-center text-blue-500 transition hover:border-blue-500 hover:bg-blue-500/10"><span className="grid size-11 place-items-center rounded-full bg-blue-500/10 text-2xl">＋</span><strong className="mt-3">Criar mais um treino</strong><span className="mt-1 text-xs text-[var(--muted)]">Adicione outra divisão à semana</span></button>
               </div></div>
             </section>
 
