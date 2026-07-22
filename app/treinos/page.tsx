@@ -9,7 +9,8 @@ import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
 
 type Exercise = { id: number; name: string; prescription: string; load: string };
-type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[] };
+type MuscleVolume = { muscle: string; sets: number };
+type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[] };
 type Protocol = {
   id: number;
   student: string;
@@ -23,25 +24,25 @@ type Protocol = {
 
 const initialProtocols: Protocol[] = [
   { id: 1, student: "João Mendes", objective: "Hipertrofia", frequency: 4, status: "Ativo", start: "01/07/2026", end: "31/08/2026", workouts: [
-    { id: 11, name: "Treino A", focus: "Peitoral e tríceps", duration: 55, exercises: [
+    { id: 11, name: "Treino A", focus: "Peitoral e tríceps", duration: 55, volume: [{ muscle: "Peitoral", sets: 10 }, { muscle: "Tríceps", sets: 5 }, { muscle: "Deltoide anterior", sets: 3 }], exercises: [
       { id: 111, name: "Supino reto com barra", prescription: "4 × 8–10", load: "60 kg" },
       { id: 112, name: "Supino inclinado com halteres", prescription: "3 × 10–12", load: "24 kg" },
       { id: 113, name: "Crucifixo no cabo", prescription: "3 × 12–15", load: "18 kg" },
       { id: 114, name: "Tríceps na polia", prescription: "3 × 10–12", load: "35 kg" },
     ] },
-    { id: 12, name: "Treino B", focus: "Costas e bíceps", duration: 60, exercises: [
+    { id: 12, name: "Treino B", focus: "Costas e bíceps", duration: 60, volume: [{ muscle: "Costas", sets: 12 }, { muscle: "Bíceps", sets: 5 }, { muscle: "Deltoide posterior", sets: 3 }], exercises: [
       { id: 121, name: "Puxada alta", prescription: "4 × 8–10", load: "55 kg" },
       { id: 122, name: "Remada baixa", prescription: "4 × 10–12", load: "50 kg" },
       { id: 123, name: "Rosca direta", prescription: "3 × 10–12", load: "24 kg" },
     ] },
-    { id: 13, name: "Treino C", focus: "Membros inferiores", duration: 65, exercises: [
+    { id: 13, name: "Treino C", focus: "Membros inferiores", duration: 65, volume: [{ muscle: "Quadríceps", sets: 8 }, { muscle: "Glúteos", sets: 6 }, { muscle: "Isquiotibiais", sets: 3 }, { muscle: "Panturrilhas", sets: 4 }], exercises: [
       { id: 131, name: "Agachamento livre", prescription: "4 × 8–10", load: "80 kg" },
       { id: 132, name: "Leg press", prescription: "4 × 10–12", load: "180 kg" },
       { id: 133, name: "Mesa flexora", prescription: "3 × 12", load: "45 kg" },
     ] },
   ] },
   { id: 2, student: "Mariana Costa", objective: "Emagrecimento", frequency: 3, status: "Ativo", start: "15/06/2026", end: "15/08/2026", workouts: [
-    { id: 21, name: "Treino A", focus: "Corpo inteiro", duration: 50, exercises: [
+    { id: 21, name: "Treino A", focus: "Corpo inteiro", duration: 50, volume: [{ muscle: "Quadríceps", sets: 3 }, { muscle: "Costas", sets: 3 }, { muscle: "Peitoral", sets: 3 }, { muscle: "Glúteos", sets: 1.5 }, { muscle: "Tríceps", sets: 1.5 }], exercises: [
       { id: 211, name: "Agachamento goblet", prescription: "3 × 12", load: "18 kg" },
       { id: 212, name: "Remada articulada", prescription: "3 × 12", load: "30 kg" },
       { id: 213, name: "Supino na máquina", prescription: "3 × 12", load: "25 kg" },
@@ -58,6 +59,7 @@ export default function WorkoutsPage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Todos");
   const [expanded, setExpanded] = useState<number[]>([1]);
+  const [expandedWorkouts, setExpandedWorkouts] = useState<number[]>([]);
   const [newProtocolOpen, setNewProtocolOpen] = useState(false);
   const [activeSession, setActiveSession] = useState<{ protocol: Protocol; workout: Workout } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
@@ -72,6 +74,10 @@ export default function WorkoutsPage() {
 
   function toggleProtocol(id: number) {
     setExpanded((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  function toggleWorkout(id: number) {
+    setExpandedWorkouts((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
   function addProtocol(event: FormEvent<HTMLFormElement>) {
@@ -132,7 +138,26 @@ export default function WorkoutsPage() {
               </div>
 
               {isExpanded && <div className="border-t border-[var(--border)] p-4 sm:p-5">
-                {protocol.workouts.length ? <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">{protocol.workouts.map((workout) => <div key={workout.id} className="rounded-2xl border border-[var(--border)] bg-[var(--background)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">{workout.name}</h3><p className="mt-1 text-sm text-[var(--muted)]">{workout.focus}</p></div><Badge tone="neutral">{workout.duration} min</Badge></div><div className="mt-4 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">{workout.exercises.length} exercícios</span><button type="button" onClick={() => startSession(protocol, workout)} className="font-semibold text-blue-500 hover:text-blue-400">Iniciar sessão →</button></div></div>)}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--background)] p-6 text-center"><p className="font-semibold">Nenhum treino criado</p><p className="mt-1 text-sm text-[var(--muted)]">Adicione o primeiro treino deste protocolo.</p></div>}
+                {protocol.workouts.length ? <div className="space-y-3">{protocol.workouts.map((workout) => {
+                  const workoutExpanded = expandedWorkouts.includes(workout.id);
+                  const maximumVolume = Math.max(...workout.volume.map((item) => item.sets), 1);
+                  return <div key={workout.id} className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
+                    <div className="flex items-center gap-3 p-4">
+                      <button type="button" onClick={() => toggleWorkout(workout.id)} className="min-w-0 flex-1 text-left" aria-expanded={workoutExpanded}>
+                        <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{workout.name}</h3><Badge tone="neutral">{workout.duration} min</Badge></div>
+                        <p className="mt-1 text-sm text-[var(--muted)]">{workout.focus} · {workout.exercises.length} exercícios</p>
+                      </button>
+                      <button type="button" onClick={() => startSession(protocol, workout)} className="hidden whitespace-nowrap text-sm font-semibold text-blue-500 hover:text-blue-400 sm:block">Iniciar sessão →</button>
+                      <button type="button" onClick={() => toggleWorkout(workout.id)} className="grid size-9 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-label={`${workoutExpanded ? "Recolher" : "Expandir"} ${workout.name}`}><span className={`transition-transform ${workoutExpanded ? "rotate-180" : ""}`}>⌄</span></button>
+                    </div>
+
+                    {workoutExpanded && <div className="grid gap-5 border-t border-[var(--border)] p-4 lg:grid-cols-[1fr_1.2fr]">
+                      <div><h4 className="text-sm font-semibold">Exercícios prescritos</h4><div className="mt-3 space-y-2">{workout.exercises.map((exercise, index) => <div key={exercise.id} className="flex items-center gap-3 rounded-xl bg-[var(--surface)] p-3"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{exercise.name}</p><p className="mt-0.5 text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load}</p></div></div>)}</div></div>
+                      <div><div className="flex items-end justify-between gap-3"><div><h4 className="text-sm font-semibold">Volume por grupo muscular</h4><p className="mt-1 text-xs text-[var(--muted)]">Séries equivalentes neste treino</p></div><Badge tone="info">{workout.volume.reduce((total, item) => total + item.sets, 0).toLocaleString("pt-BR")} séries</Badge></div><div className="mt-4 space-y-3">{workout.volume.map((item) => <div key={item.muscle}><div className="mb-1.5 flex items-center justify-between gap-3 text-xs"><span className="font-medium">{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")} séries</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.sets / maximumVolume * 100}%` }} /></div></div>)}</div><p className="mt-4 text-xs text-[var(--muted)]">O cálculo considera séries diretas e a participação ponderada dos músculos secundários.</p></div>
+                      <Button className="w-full lg:col-span-2 sm:hidden" onClick={() => startSession(protocol, workout)}>Iniciar sessão</Button>
+                    </div>}
+                  </div>;
+                })}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--background)] p-6 text-center"><p className="font-semibold">Nenhum treino criado</p><p className="mt-1 text-sm text-[var(--muted)]">Adicione o primeiro treino deste protocolo.</p></div>}
                 <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary">Duplicar protocolo</Button><Button>{protocol.workouts.length ? "Editar prescrição" : "＋ Adicionar treino"}</Button></div>
               </div>}
             </Card>;
