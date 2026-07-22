@@ -67,7 +67,7 @@ export default function EvolutionChart({ assessments, metrics }: EvolutionChartP
           return <g key={metric.key}>{points.length > 1 && <path d={path} fill="none" stroke={metric.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}{points.map((point) => {
             const multipleSeries = series.length > 1;
             const labelOffsetX = multipleSeries ? [-12, 0, 12][seriesIndex] ?? 0 : 0;
-            const labelOffsetY = multipleSeries && seriesIndex === 1 ? 19 : -9;
+            const labelOffsetY = multipleSeries && seriesIndex > 0 ? 19 : -9;
             return <g key={`${metric.key}-${point.index}`}><circle cx={x(point.index)} cy={y(point.value)} r="5" fill={metric.color} stroke="var(--surface)" strokeWidth="3" /><text x={x(point.index) + labelOffsetX} y={y(point.value) + labelOffsetY} fill={metric.color} fontSize="12" fontWeight="800" textAnchor="middle" stroke="var(--background)" strokeWidth="3" paintOrder="stroke">{point.value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}</text></g>;
           })}</g>;
         })}
