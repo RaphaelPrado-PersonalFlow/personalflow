@@ -125,7 +125,7 @@ export default function WorkoutsPage() {
   const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: number; workoutId: number } | null>(null);
   const [draftExercises, setDraftExercises] = useState<Exercise[]>([]);
   const [workoutDrafts, setWorkoutDrafts] = useState<Record<number, Exercise[]>>({});
-  const [exerciseToAdd, setExerciseToAdd] = useState(exerciseCatalog[0].name);
+  const [exerciseToAdd, setExerciseToAdd] = useState("");
   const [expandedEditorExercise, setExpandedEditorExercise] = useState<number | null>(null);
   const [editingWorkoutDetails, setEditingWorkoutDetails] = useState<number | null>(null);
   const [workoutToDeleteInEditor, setWorkoutToDeleteInEditor] = useState<number | null>(null);
@@ -339,6 +339,7 @@ export default function WorkoutsPage() {
     if (!exerciseCatalog.some((exercise) => exercise.name === exerciseToAdd)) return;
     const id = Math.max(...draftExercises.map((exercise) => exercise.id), 0) + 1;
     setDraftExercises((current) => [...current, { id, name: exerciseToAdd, prescription: "3 × 10–12", sets: 3, reps: "10–12", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [10, 10, 10], methodSeries: [] }]);
+    setExerciseToAdd("");
   }
 
   function addExerciseToEditorWorkout(workoutId: number, exercises: Exercise[]) {
@@ -350,6 +351,7 @@ export default function WorkoutsPage() {
     } else {
       setWorkoutDrafts((current) => ({ ...current, [workoutId]: [...exercises, exercise] }));
     }
+    setExerciseToAdd("");
   }
 
   function moveDraftExercise(index: number, direction: -1 | 1) {
