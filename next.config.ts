@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Permite testar o servidor de desenvolvimento em celulares na mesma rede.
+  allowedDevOrigins: ["192.168.15.15", "192.168.15.18"],
 };
 
 export default nextConfig;
