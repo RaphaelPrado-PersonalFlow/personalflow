@@ -8,7 +8,7 @@ import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
 
-type Exercise = { id: number; name: string; prescription: string; load: string };
+type Exercise = { id: number; name: string; prescription: string; load: string; rest?: string };
 type MuscleVolume = { muscle: string; sets: number };
 type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[] };
 type Protocol = {
@@ -54,6 +54,36 @@ const initialProtocols: Protocol[] = [
 
 const students = ["João Mendes", "Mariana Costa", "Carlos Lima", "Ana Souza", "Paulo Rocha", "Beatriz Alves"];
 
+const exerciseCatalog = [
+  { name: "Supino reto com barra", muscles: [{ muscle: "Peitoral", factor: 1 }, { muscle: "Tríceps", factor: .5 }, { muscle: "Deltoide anterior", factor: .5 }] },
+  { name: "Supino inclinado com halteres", muscles: [{ muscle: "Peitoral", factor: 1 }, { muscle: "Tríceps", factor: .5 }, { muscle: "Deltoide anterior", factor: .5 }] },
+  { name: "Crucifixo no cabo", muscles: [{ muscle: "Peitoral", factor: 1 }] },
+  { name: "Tríceps na polia", muscles: [{ muscle: "Tríceps", factor: 1 }] },
+  { name: "Puxada alta", muscles: [{ muscle: "Costas", factor: 1 }, { muscle: "Bíceps", factor: .5 }] },
+  { name: "Remada baixa", muscles: [{ muscle: "Costas", factor: 1 }, { muscle: "Bíceps", factor: .5 }, { muscle: "Deltoide posterior", factor: .5 }] },
+  { name: "Rosca direta", muscles: [{ muscle: "Bíceps", factor: 1 }] },
+  { name: "Agachamento livre", muscles: [{ muscle: "Quadríceps", factor: 1 }, { muscle: "Glúteos", factor: .5 }, { muscle: "Isquiotibiais", factor: .5 }] },
+  { name: "Leg press", muscles: [{ muscle: "Quadríceps", factor: 1 }, { muscle: "Glúteos", factor: .5 }] },
+  { name: "Mesa flexora", muscles: [{ muscle: "Isquiotibiais", factor: 1 }] },
+  { name: "Agachamento goblet", muscles: [{ muscle: "Quadríceps", factor: 1 }, { muscle: "Glúteos", factor: .5 }] },
+  { name: "Remada articulada", muscles: [{ muscle: "Costas", factor: 1 }, { muscle: "Bíceps", factor: .5 }] },
+  { name: "Supino na máquina", muscles: [{ muscle: "Peitoral", factor: 1 }, { muscle: "Tríceps", factor: .5 }] },
+];
+
+function seriesFromPrescription(prescription: string) {
+  return Number(prescription.match(/\d+/)?.[0] ?? 0);
+}
+
+function calculateWorkoutVolume(exercises: Exercise[]) {
+  const totals = exercises.reduce<Record<string, number>>((result, exercise) => {
+    const catalogExercise = exerciseCatalog.find((item) => item.name === exercise.name);
+    const series = seriesFromPrescription(exercise.prescription);
+    catalogExercise?.muscles.forEach((item) => { result[item.muscle] = (result[item.muscle] ?? 0) + series * item.factor; });
+    return result;
+  }, {});
+  return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
+}
+
 export default function WorkoutsPage() {
   const [protocols, setProtocols] = useState(initialProtocols);
   const [query, setQuery] = useState("");
@@ -64,6 +94,9 @@ export default function WorkoutsPage() {
   const [activeSession, setActiveSession] = useState<{ protocol: Protocol; workout: Workout } | null>(null);
   const [workoutToEdit, setWorkoutToEdit] = useState<{ protocolId: number; workout: Workout } | null>(null);
   const [workoutToRemove, setWorkoutToRemove] = useState<{ protocolId: number; workout: Workout } | null>(null);
+  const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: number; workoutId: number } | null>(null);
+  const [draftExercises, setDraftExercises] = useState<Exercise[]>([]);
+  const [exerciseToAdd, setExerciseToAdd] = useState(exerciseCatalog[0].name);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
 
   const filteredProtocols = useMemo(() => {
@@ -160,6 +193,55 @@ export default function WorkoutsPage() {
     setWorkoutToEdit(null);
   }
 
+  function openPrescriptionEditor(protocolId: number, workout: Workout) {
+    setPrescriptionEditor({ protocolId, workoutId: workout.id });
+    setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
+  }
+
+  function selectEditorWorkout(protocolId: number, workoutId: number) {
+    const workout = protocols.find((protocol) => protocol.id === protocolId)?.workouts.find((item) => item.id === workoutId);
+    if (!workout) return;
+    setPrescriptionEditor({ protocolId, workoutId });
+    setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
+  }
+
+  function updateDraftExercise(id: number, field: "prescription" | "load" | "rest", value: string) {
+    setDraftExercises((current) => current.map((exercise) => exercise.id === id ? { ...exercise, [field]: value } : exercise));
+  }
+
+  function addDraftExercise() {
+    const id = Math.max(...draftExercises.map((exercise) => exercise.id), 0) + 1;
+    setDraftExercises((current) => [...current, { id, name: exerciseToAdd, prescription: "3 × 10–12", load: "0 kg", rest: "90 s" }]);
+  }
+
+  function moveDraftExercise(index: number, direction: -1 | 1) {
+    const destination = index + direction;
+    if (destination < 0 || destination >= draftExercises.length) return;
+    setDraftExercises((current) => {
+      const reordered = [...current];
+      [reordered[index], reordered[destination]] = [reordered[destination], reordered[index]];
+      return reordered;
+    });
+  }
+
+  function savePrescription() {
+    if (!prescriptionEditor) return;
+    const volume = calculateWorkoutVolume(draftExercises);
+    setProtocols((current) => current.map((protocol) => protocol.id === prescriptionEditor.protocolId
+      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === prescriptionEditor.workoutId ? { ...workout, exercises: draftExercises, volume } : workout) }
+      : protocol));
+    setPrescriptionEditor(null);
+  }
+
+  function addWorkoutToProtocol(protocol: Protocol) {
+    const id = Math.max(...protocols.flatMap((item) => item.workouts.map((workout) => workout.id)), 0) + 1;
+    const workout: Workout = { id, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 50, exercises: [], volume: [] };
+    setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, workout] } : item));
+    setExpandedWorkouts((current) => [...current, id]);
+    setPrescriptionEditor({ protocolId: protocol.id, workoutId: id });
+    setDraftExercises([]);
+  }
+
   const activeCount = protocols.filter((protocol) => protocol.status === "Ativo").length;
   const workoutCount = protocols.reduce((total, protocol) => total + protocol.workouts.length, 0);
 
@@ -227,7 +309,7 @@ export default function WorkoutsPage() {
                   <div className="mt-5 grid gap-x-8 gap-y-4 lg:grid-cols-2">{protocolVolume.map((item) => <div key={item.muscle}><div className="mb-1.5 flex items-center justify-between gap-3 text-sm"><span className="font-medium">{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")} séries</strong></div><div className="h-3.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 via-blue-500 to-cyan-400" style={{ width: `${item.sets / maximumProtocolVolume * 100}%` }} /></div></div>)}</div>
                   <p className="mt-5 border-t border-blue-500/15 pt-4 text-xs text-[var(--muted)]">A visão macro considera todos os treinos uma vez. A projeção semanal será calculada posteriormente conforme a frequência planejada de cada treino.</p>
                 </div>}
-                <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary" onClick={() => duplicateProtocol(protocol)}>Duplicar protocolo</Button><Button>{protocol.workouts.length ? "Editar prescrição" : "＋ Adicionar treino"}</Button></div>
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary" onClick={() => duplicateProtocol(protocol)}>Duplicar protocolo</Button><Button onClick={() => protocol.workouts.length ? openPrescriptionEditor(protocol.id, protocol.workouts[0]) : addWorkoutToProtocol(protocol)}>{protocol.workouts.length ? "Editar prescrição" : "＋ Adicionar treino"}</Button></div>
               </div>}
             </Card>;
           })}
@@ -235,6 +317,20 @@ export default function WorkoutsPage() {
       </div>
 
       {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Defina o planejamento inicial do aluno.</p></div><button type="button" onClick={() => setNewProtocolOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select name="student" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{students.map((student) => <option key={student}>{student}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setNewProtocolOpen(false)}>Cancelar</Button><Button type="submit">Criar protocolo</Button></div></form></div>}
+
+      {prescriptionEditor && (() => {
+        const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);
+        const workout = protocol?.workouts.find((item) => item.id === prescriptionEditor.workoutId);
+        if (!protocol || !workout) return null;
+        const previewVolume = calculateWorkoutVolume(draftExercises);
+        return <div className="fixed inset-0 z-[65] overflow-y-auto bg-slate-950/90 p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="prescription-editor-title"><div className="mx-auto my-2 w-full max-w-6xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl"><header className="sticky top-0 z-10 flex items-start justify-between gap-4 rounded-t-2xl border-b border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor de prescrição</p><h2 id="prescription-editor-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.frequency}× por semana</p></div><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-9 shrink-0 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></header>
+          <div className="grid gap-5 p-4 sm:p-6 lg:grid-cols-[1.5fr_1fr]">
+            <section><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><label className="text-sm font-medium">Treino<select value={workout.id} onChange={(event) => selectEditorWorkout(protocol.id, Number(event.target.value))} className="mt-2 h-11 w-full min-w-52 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{protocol.workouts.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.focus}</option>)}</select></label><div className="flex flex-1 flex-col gap-2 sm:flex-row sm:justify-end"><select value={exerciseToAdd} onChange={(event) => setExerciseToAdd(event.target.value)} className="h-11 min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm">{exerciseCatalog.map((exercise) => <option key={exercise.name}>{exercise.name}</option>)}</select><Button onClick={addDraftExercise}>＋ Adicionar</Button></div></div>
+              <div className="mt-5 space-y-3">{draftExercises.map((exercise, index) => <div key={exercise.id} className="rounded-2xl border border-[var(--border)] bg-[var(--background)] p-4"><div className="flex items-center gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><h3 className="min-w-0 flex-1 truncate font-semibold">{exercise.name}</h3><button type="button" onClick={() => moveDraftExercise(index, -1)} disabled={index === 0} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30" aria-label={`Mover ${exercise.name} para cima`}>↑</button><button type="button" onClick={() => moveDraftExercise(index, 1)} disabled={index === draftExercises.length - 1} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30" aria-label={`Mover ${exercise.name} para baixo`}>↓</button><button type="button" onClick={() => setDraftExercises((current) => current.filter((item) => item.id !== exercise.id))} className="grid size-8 place-items-center rounded-lg text-red-500 hover:bg-red-500/10" aria-label={`Remover ${exercise.name}`}>×</button></div><div className="mt-4 grid grid-cols-3 gap-2"><label className="text-xs font-medium text-[var(--muted)]">Séries × repetições<input value={exercise.prescription} onChange={(event) => updateDraftExercise(exercise.id, "prescription", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs font-medium text-[var(--muted)]">Carga<input value={exercise.load} onChange={(event) => updateDraftExercise(exercise.id, "load", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs font-medium text-[var(--muted)]">Descanso<input value={exercise.rest ?? "90 s"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]" /></label></div></div>)}{draftExercises.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] p-8 text-center"><p className="font-semibold">Treino vazio</p><p className="mt-1 text-sm text-[var(--muted)]">Escolha um exercício da biblioteca para começar.</p></div>}</div>
+            </section>
+            <aside className="h-fit rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 sm:p-5 lg:sticky lg:top-28"><div className="flex items-end justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Prévia automática</p><h3 className="mt-1 font-semibold">Volume do treino</h3></div><Badge tone="info">{previewVolume.reduce((total, item) => total + item.sets, 0).toLocaleString("pt-BR")} séries</Badge></div><div className="mt-5 space-y-4">{previewVolume.map((item) => { const maximum = Math.max(...previewVolume.map((volume) => volume.sets), 1); return <div key={item.muscle}><div className="mb-1.5 flex justify-between gap-3 text-sm"><span>{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")}</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.sets / maximum * 100}%` }} /></div></div>; })}{previewVolume.length === 0 && <p className="text-sm text-[var(--muted)]">Adicione exercícios classificados para visualizar o volume.</p>}</div><p className="mt-5 border-t border-blue-500/15 pt-4 text-xs leading-5 text-[var(--muted)]">O gráfico é atualizado enquanto você altera séries ou exercícios. Os valores consideram músculos principais e secundários ponderados.</p></aside>
+          </div><footer className="sticky bottom-0 flex flex-col-reverse gap-2 rounded-b-2xl border-t border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:justify-end sm:p-6"><Button variant="ghost" onClick={() => setPrescriptionEditor(null)}>Cancelar</Button><Button onClick={savePrescription}>Salvar prescrição</Button></footer></div></div>;
+      })()}
 
       {workoutToEdit && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-workout-title"><form onSubmit={editWorkout} className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="edit-workout-title" className="text-xl font-semibold">Editar treino</h2><p className="mt-1 text-sm text-[var(--muted)]">Atualize as informações gerais deste treino.</p></div><button type="button" onClick={() => setWorkoutToEdit(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 space-y-4"><label className="block text-sm font-medium">Nome do treino<input name="name" required defaultValue={workoutToEdit.workout.name} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Foco do treino<input name="focus" required defaultValue={workoutToEdit.workout.focus} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Duração estimada (minutos)<input name="duration" required type="number" min="1" defaultValue={workoutToEdit.workout.duration} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label></div><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="ghost" onClick={() => setWorkoutToEdit(null)}>Cancelar</Button><Button type="submit">Salvar alterações</Button></div></form></div>}
 
