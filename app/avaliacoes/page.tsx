@@ -8,6 +8,7 @@ import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
 import EvolutionChart, { ChartAssessment, ChartMetric } from "@/components/evaluations/EvolutionChart";
+import AnamnesisModal from "@/components/evaluations/AnamnesisModal";
 import {
   BodyFatProtocol,
   BiologicalSex,
@@ -55,6 +56,8 @@ export default function AssessmentsPage() {
   const [assessments, setAssessments] = useState(initialAssessments);
   const [selectedStudent, setSelectedStudent] = useState("João Mendes");
   const [modalOpen, setModalOpen] = useState(false);
+  const [anamnesisOpen, setAnamnesisOpen] = useState(false);
+  const [studentsWithAnamnesis, setStudentsWithAnamnesis] = useState<string[]>([]);
   const [details, setDetails] = useState<Assessment | null>(null);
   const [sex, setSex] = useState<BiologicalSex>("Masculino");
   const [protocol, setProtocol] = useState<BodyFatProtocol>("Jackson-Pollock 3 dobras");
@@ -181,6 +184,7 @@ export default function AssessmentsPage() {
         <Card className="p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div><p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Aluno selecionado</p><select value={selectedStudent} onChange={(event) => changeSelectedStudent(event.target.value)} className="mt-2 h-11 min-w-64 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-semibold outline-none focus:border-blue-500">{students.map((student) => <option key={student}>{student}</option>)}</select></div>
+            <Button variant="secondary" onClick={() => setAnamnesisOpen(true)}>Anamnese{studentsWithAnamnesis.includes(selectedStudent) && <span className="size-2 rounded-full bg-emerald-500" aria-label="Anamnese salva" />}</Button>
             <div className="flex items-center gap-2"><Badge tone={latest ? "success" : "warning"}>{latest ? `${studentAssessments.length} avaliações` : "Sem avaliação"}</Badge>{latest && <span className="text-sm text-[var(--muted)]">Última em {latest.date}</span>}</div>
           </div>
         </Card>
@@ -307,6 +311,8 @@ export default function AssessmentsPage() {
           </form>
         </div>
       )}
+
+      {anamnesisOpen && <AnamnesisModal student={selectedStudent} onClose={() => setAnamnesisOpen(false)} onSave={() => { setStudentsWithAnamnesis((current) => current.includes(selectedStudent) ? current : [...current, selectedStudent]); setAnamnesisOpen(false); }} />}
 
       {details && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/75 p-4" role="dialog" aria-modal="true" aria-labelledby="assessment-details-title"><Card className="w-full max-w-md"><div className="flex items-center justify-between"><div><h2 id="assessment-details-title" className="text-xl font-semibold">Detalhes da avaliação</h2><p className="mt-1 text-sm text-[var(--muted)]">{details.student} · {details.date}</p></div><button onClick={() => setDetails(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid grid-cols-2 gap-3">{[["Peso", formatNumber(details.weight, " kg")], ["Estatura", formatNumber(details.height, " m")], ["Gordura", formatNumber(details.bodyFat, "%")], ["Cintura", formatNumber(details.waist, " cm")], ["Massa livre", formatNumber(details.leanMass, " kg")], ["IMC", formatNumber(details.weight / (details.height * details.height))]].map(([label, value]) => <div key={label} className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 font-semibold">{value}</p></div>)}</div>{details.notes && <div className="mt-4 rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-xs text-[var(--muted)]">Observações</p><p className="mt-1 text-sm">{details.notes}</p></div>}<Button onClick={() => setDetails(null)} className="mt-6 w-full">Fechar</Button></Card></div>}
     </MainLayout>
