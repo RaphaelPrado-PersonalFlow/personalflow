@@ -11,7 +11,7 @@ import StatCard from "@/components/ui/StatCard";
 type AdvancedMethod = "Convencional" | "Drop-set" | "Rest-pause" | "Cluster set" | "Pirâmide" | "Myo-reps" | "Bi-set";
 type Exercise = { id: number; name: string; prescription: string; load: string; sets?: number; reps?: string; rest?: string; method?: AdvancedMethod; methodRounds?: number; methodValue?: string; seriesReps?: number[]; methodSeries?: number[] };
 type MuscleVolume = { muscle: string; sets: number };
-type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[] };
+type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[]; targetExecutions?: number; completedExecutions?: number };
 type Protocol = {
   id: number;
   student: string;
@@ -110,6 +110,25 @@ function calculateProtocolVolume(workouts: Workout[]) {
     return result;
   }, {});
   return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
+}
+
+function protocolDurationInWeeks(protocol: Protocol) {
+  const parseDate = (value: string) => {
+    const [day, month, year] = value.split("/").map(Number);
+    return day && month && year ? new Date(year, month - 1, day) : null;
+  };
+  const start = parseDate(protocol.start);
+  const end = parseDate(protocol.end);
+  if (!start || !end || end < start) return 1;
+  const durationInDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  return Math.max(1, Math.ceil(durationInDays / 7));
+}
+
+function suggestedWorkoutExecutions(protocol: Protocol, workoutIndex: number) {
+  if (protocol.workouts.length === 0) return 0;
+  const totalExecutions = protocolDurationInWeeks(protocol) * protocol.frequency;
+  const base = Math.floor(totalExecutions / protocol.workouts.length);
+  return base + (workoutIndex < totalExecutions % protocol.workouts.length ? 1 : 0);
 }
 
 export default function WorkoutsPage() {
@@ -254,7 +273,7 @@ export default function WorkoutsPage() {
     setExpandedEditorExercise(null);
   }
 
-  function updateWorkoutDetails(protocolId: number, workoutId: number, field: "name" | "focus", value: string) {
+  function updateWorkoutDetails(protocolId: number, workoutId: number, field: "name" | "focus" | "targetExecutions", value: string | number) {
     setProtocols((current) => current.map((protocol) => protocol.id === protocolId
       ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === workoutId ? { ...workout, [field]: value } : workout) }
       : protocol));
@@ -270,6 +289,14 @@ export default function WorkoutsPage() {
     setDraftExercises([]);
     setExpandedEditorExercise(null);
     setEditingWorkoutDetails(id);
+  }
+
+  function finishSession() {
+    if (!activeSession) return;
+    setProtocols((current) => current.map((protocol) => protocol.id === activeSession.protocol.id
+      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === activeSession.workout.id ? { ...workout, completedExecutions: (workout.completedExecutions ?? 0) + 1 } : workout) }
+      : protocol));
+    setActiveSession(null);
   }
 
   function deleteWorkoutFromEditor(protocol: Protocol, workoutId: number) {
@@ -436,14 +463,19 @@ export default function WorkoutsPage() {
               </div>
 
               {isExpanded && <div className="border-t border-[var(--border)] p-4 sm:p-5">
-                {protocol.workouts.length ? <div className="space-y-3">{protocol.workouts.map((workout) => {
+                {protocol.workouts.length ? <div className="space-y-3">{protocol.workouts.map((workout, workoutIndex) => {
                   const workoutExpanded = expandedWorkouts.includes(workout.id);
                   const maximumVolume = Math.max(...workout.volume.map((item) => item.sets), 1);
+                  const targetExecutions = workout.targetExecutions ?? suggestedWorkoutExecutions(protocol, workoutIndex);
+                  const completedExecutions = workout.completedExecutions ?? 0;
+                  const executionProgress = targetExecutions > 0 ? Math.min(completedExecutions / targetExecutions * 100, 100) : 0;
                   return <div key={workout.id} className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
                     <div className="flex items-center gap-3 p-4">
                       <button type="button" onClick={() => toggleWorkout(workout.id)} className="min-w-0 flex-1 text-left" aria-expanded={workoutExpanded}>
                         <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{workout.name}</h3><Badge tone="neutral">{workout.duration} min</Badge></div>
                         <p className="mt-1 text-sm text-[var(--muted)]">{workout.focus} · {workout.exercises.length} exercícios</p>
+                        <div className="mt-3 flex items-center justify-between gap-3 text-xs"><span className="text-[var(--muted)]">Progresso no protocolo</span><strong>{completedExecutions} de {targetExecutions} sessões</strong></div>
+                        <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-all" style={{ width: `${executionProgress}%` }} /></div>
                       </button>
                       <button type="button" onClick={() => startSession(protocol, workout)} className="hidden whitespace-nowrap text-sm font-semibold text-blue-500 hover:text-blue-400 sm:block">Iniciar sessão →</button>
                       <button type="button" onClick={() => toggleWorkout(workout.id)} className="grid size-9 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-label={`${workoutExpanded ? "Recolher" : "Expandir"} ${workout.name}`}><span className={`transition-transform ${workoutExpanded ? "rotate-180" : ""}`}>⌄</span></button>
@@ -487,13 +519,14 @@ export default function WorkoutsPage() {
 
             <section className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"><div className="mb-4"><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Clique em um exercício para abrir ou recolher seus campos de prescrição.</p></div>
               <div className="overflow-x-auto pb-2"><div className="grid auto-cols-[310px] grid-flow-col items-start gap-4 xl:auto-cols-[minmax(300px,1fr)]">
-                {editorWorkouts.map((item) => {
+                {editorWorkouts.map((item, workoutIndex) => {
                   const active = item.id === activeWorkout.id;
                   const total = item.volume.reduce((sum, volume) => sum + volume.sets, 0);
                   const maximum = Math.max(...item.volume.map((volume) => volume.sets), 1);
+                  const targetExecutions = item.targetExecutions ?? suggestedWorkoutExecutions(protocol, workoutIndex);
                   return <article key={item.id} className={`rounded-2xl border p-3 ${active ? "border-blue-500 bg-blue-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}>
-                    <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome e foco de ${item.name}`}>✎</button><button type="button" onClick={() => setWorkoutToDeleteInEditor(item.id)} disabled={editorWorkouts.length === 1} className="grid size-7 shrink-0 place-items-center rounded-lg border border-red-500/30 bg-red-500/10 text-xs text-red-500 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Excluir ${item.name}`}>×</button></div>
-                    {active && editingWorkoutDetails === item.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><label className="text-[11px] text-[var(--muted)]">Nome do treino<input value={item.name} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Foco ou descrição<input value={item.focus} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "focus", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><button type="button" onClick={() => setEditingWorkoutDetails(null)} className="justify-self-end rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white">Concluir</button></div>}
+                    <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><div className="flex shrink-0 flex-col items-end gap-1"><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge><span className="text-[10px] font-medium text-[var(--muted)]">Meta: {targetExecutions}×</span></div><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome, foco e meta de ${item.name}`}>✎</button><button type="button" onClick={() => setWorkoutToDeleteInEditor(item.id)} disabled={editorWorkouts.length === 1} className="grid size-7 shrink-0 place-items-center rounded-lg border border-red-500/30 bg-red-500/10 text-xs text-red-500 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Excluir ${item.name}`}>×</button></div>
+                    {active && editingWorkoutDetails === item.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><label className="text-[11px] text-[var(--muted)]">Nome do treino<input value={item.name} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Foco ou descrição<input value={item.focus} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "focus", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Meta de execuções no protocolo<input type="number" min="1" max="999" value={targetExecutions} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "targetExecutions", Math.max(1, Number(event.target.value)))} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /><span className="mt-1 block text-[10px] leading-4">Sugestão automática baseada em {protocolDurationInWeeks(protocol)} semanas e frequência de {protocol.frequency}× por semana.</span></label><button type="button" onClick={() => setEditingWorkoutDetails(null)} className="justify-self-end rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white">Concluir</button></div>}
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {total.toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos</span></div>
                     <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => {
                       const open = active && expandedEditorExercise === exercise.id;
@@ -600,7 +633,7 @@ export default function WorkoutsPage() {
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
-      {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{activeSession.workout.exercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); return <button key={exercise.id} type="button" onClick={() => toggleExercise(exercise.id)} className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)] hover:border-blue-500/50"}`}><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong><span className="mt-1 block text-sm text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span></span><span className="text-xs font-semibold text-[var(--muted)]">{done ? "Concluído" : "Concluir"}</span></button>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{activeSession.workout.exercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${completedExercises.length / activeSession.workout.exercises.length * 100}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={() => setActiveSession(null)}>Finalizar sessão</Button></div></aside></div>}
+      {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{activeSession.workout.exercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); return <button key={exercise.id} type="button" onClick={() => toggleExercise(exercise.id)} className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)] hover:border-blue-500/50"}`}><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong><span className="mt-1 block text-sm text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span></span><span className="text-xs font-semibold text-[var(--muted)]">{done ? "Concluído" : "Concluir"}</span></button>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{activeSession.workout.exercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${completedExercises.length / activeSession.workout.exercises.length * 100}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
     </MainLayout>
   );
 }
