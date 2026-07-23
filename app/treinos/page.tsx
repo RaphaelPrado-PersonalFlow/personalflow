@@ -131,29 +131,18 @@ function exerciseMethodSummary(exercise: Exercise) {
   return methods.length ? methods.join(" + ") : "Convencional";
 }
 
-function advancedMethodGuidance(exercise: Exercise) {
+function sessionSeriesDetails(exercise: Exercise) {
   const configurations = seriesConfigurations(exercise);
-  const advancedConfigurations = configurations.filter((item) => item.method !== "Convencional");
-  if (advancedConfigurations.length === 0) return null;
-  const methods = [...new Set(advancedConfigurations.map((item) => item.method))] as Exclude<AdvancedMethod, "Convencional">[];
-  const descriptions: Record<Exclude<AdvancedMethod, "Convencional">, string> = {
-    "Drop-set": "Ao terminar a série, reduza a carga sem descanso e continue as repetições.",
-    "Rest-pause": "Faça uma pausa curta dentro da série e retome até completar os blocos.",
-    "Cluster set": "Divida a série em pequenos blocos com pausas curtas entre eles.",
-    "Pirâmide": "Ajuste carga e repetições em cada série conforme a sequência prescrita.",
-    "Myo-reps": "Após a série de ativação, execute mini-séries com pausas curtas.",
-    "Bi-set": "Execute o exercício em sequência com o exercício combinado, sem descanso.",
-  };
-  return {
-    title: methods.length === 1 ? methods[0] : "Métodos combinados",
-    sequence: configurations.flatMap((configuration, index) => {
-      if (configuration.method === "Convencional") return [];
-      const repetitions = configuration.blocks?.join("+") || configuration.reps;
-      const load = configuration.load ? ` · ${configuration.load}` : "";
-      return [`S${index + 1}: ${configuration.method} ${repetitions}${load}`];
-    }).join(" | "),
-    description: methods.map((method) => descriptions[method]).join(" "),
-  };
+  const hasAdvancedMethod = configurations.some((item) => item.method !== "Convencional");
+  const hasDifferentRepetitions = new Set(configurations.map((item) => item.reps)).size > 1;
+  const hasDifferentLoads = new Set(configurations.map((item) => item.load)).size > 1;
+  if (!hasAdvancedMethod && !hasDifferentRepetitions && !hasDifferentLoads) return null;
+
+  return configurations.map((configuration, index) => {
+    const repetitions = configuration.blocks?.join("+") || configuration.reps;
+    const method = configuration.method === "Convencional" ? "" : `${configuration.method} `;
+    return { label: `S${index + 1}: ${method}${repetitions}`, load: configuration.load };
+  });
 }
 
 function methodConfiguration(_method: AdvancedMethod): { rounds: string; value: string; placeholder: string } | undefined {
@@ -761,7 +750,7 @@ export default function WorkoutsPage() {
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
-      {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{activeSession.workout.exercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); const guidance = advancedMethodGuidance(exercise); return <button key={exercise.id} type="button" onClick={() => toggleExercise(exercise.id)} className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)] hover:border-blue-500/50"}`}><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong><span className="mt-1 block text-sm text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span>{guidance && <span className="mt-3 block rounded-xl border border-violet-500/30 bg-violet-500/10 p-3 text-left"><strong className="block text-xs font-semibold text-violet-500">{guidance.title}</strong><span className="mt-1 block text-xs font-medium text-[var(--foreground)]">{guidance.sequence}</span><span className="mt-1 block text-xs leading-5 text-[var(--muted)]">{guidance.description}</span></span>}</span><span className="text-xs font-semibold text-[var(--muted)]">{done ? "Concluído" : "Concluir"}</span></button>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{activeSession.workout.exercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${completedExercises.length / activeSession.workout.exercises.length * 100}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
+      {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{activeSession.workout.exercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); const seriesDetails = sessionSeriesDetails(exercise); return <button key={exercise.id} type="button" onClick={() => toggleExercise(exercise.id)} className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)] hover:border-blue-500/50"}`}><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong>{seriesDetails ? <span className="mt-2 block space-y-1.5">{seriesDetails.map((series) => <span key={series.label} className="flex items-center justify-between gap-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-xs"><strong className="font-semibold text-[var(--foreground)]">{series.label}</strong><span className="shrink-0 text-[var(--muted)]">{series.load}</span></span>)}</span> : <span className="mt-1 block text-sm text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span>}</span><span className="text-xs font-semibold text-[var(--muted)]">{done ? "Concluído" : "Concluir"}</span></button>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{activeSession.workout.exercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${completedExercises.length / activeSession.workout.exercises.length * 100}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
     </MainLayout>
   );
 }
