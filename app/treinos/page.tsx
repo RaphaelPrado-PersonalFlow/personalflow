@@ -11,6 +11,7 @@ import StatCard from "@/components/ui/StatCard";
 type AdvancedMethod = "Convencional" | "Drop-set" | "Rest-pause" | "Cluster set" | "Pirâmide" | "Myo-reps" | "Bi-set";
 type SeriesConfiguration = { method: AdvancedMethod; reps: string; load: string; blocks?: number[] };
 type Exercise = { id: number; name: string; prescription: string; load: string; sets?: number; reps?: string; rest?: string; method?: AdvancedMethod; methodRounds?: number; methodValue?: string; seriesReps?: number[]; methodSeries?: number[]; seriesConfigurations?: SeriesConfiguration[] };
+type SessionExercise = Exercise & { originalExerciseId: number; changed?: boolean };
 type MuscleVolume = { muscle: string; sets: number };
 type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[]; targetExecutions?: number; completedExecutions?: number };
 type Protocol = {
@@ -196,6 +197,9 @@ export default function WorkoutsPage() {
   const [expandedMacroVolumes, setExpandedMacroVolumes] = useState<number[]>([]);
   const [newProtocolOpen, setNewProtocolOpen] = useState(false);
   const [activeSession, setActiveSession] = useState<{ protocol: Protocol; workout: Workout } | null>(null);
+  const [sessionExercises, setSessionExercises] = useState<SessionExercise[]>([]);
+  const [swappingExerciseId, setSwappingExerciseId] = useState<number | null>(null);
+  const [finishChoiceOpen, setFinishChoiceOpen] = useState(false);
   const [workoutToEdit, setWorkoutToEdit] = useState<{ protocolId: number; workout: Workout } | null>(null);
   const [workoutToRemove, setWorkoutToRemove] = useState<{ protocolId: number; workout: Workout } | null>(null);
   const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: number; workoutId: number } | null>(null);
@@ -247,11 +251,45 @@ export default function WorkoutsPage() {
 
   function startSession(protocol: Protocol, workout: Workout) {
     setCompletedExercises([]);
+    setSessionExercises(workout.exercises.map((exercise) => {
+      const configurations = seriesConfigurations(exercise);
+      return { ...exercise, originalExerciseId: exercise.id, sets: configurations.length, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
+    }));
+    setSwappingExerciseId(null);
+    setFinishChoiceOpen(false);
     setActiveSession({ protocol, workout });
   }
 
   function toggleExercise(id: number) {
     setCompletedExercises((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  function changeSessionSeries(id: number, direction: -1 | 1) {
+    setSessionExercises((current) => current.map((exercise) => {
+      if (exercise.id !== id) return exercise;
+      const configurations = seriesConfigurations(exercise);
+      if (direction === -1 && configurations.length === 1) return exercise;
+      const nextConfigurations = direction === 1
+        ? [...configurations, { method: "Convencional" as const, reps: "8–12", load: configurations.at(-1)?.load ?? exercise.load }]
+        : configurations.slice(0, -1);
+      return { ...exercise, changed: true, sets: nextConfigurations.length, seriesConfigurations: nextConfigurations, prescription: formatSeriesPrescription(nextConfigurations) };
+    }));
+  }
+
+  function updateSessionExercise(id: number, field: "name" | "load", value: string) {
+    setSessionExercises((current) => current.map((exercise) => {
+      if (exercise.id !== id) return exercise;
+      const next = { ...exercise, [field]: value, changed: true };
+      if (field !== "load") return next;
+      const configurations = seriesConfigurations(exercise).map((configuration) => ({ ...configuration, load: value }));
+      return { ...next, seriesConfigurations: configurations };
+    }));
+  }
+
+  function compatibleExerciseNames(exercise: Exercise) {
+    const original = exerciseCatalog.find((item) => item.name === exercise.name);
+    const primaryMuscles = original?.muscles.filter((item) => item.factor === 1).map((item) => item.muscle) ?? [];
+    return exerciseCatalog.filter((item) => item.name === exercise.name || item.muscles.some((muscle) => muscle.factor === 1 && primaryMuscles.includes(muscle.muscle))).map((item) => item.name);
   }
 
   function copyWorkout(workout: Workout, name = `${workout.name} (cópia)`): Workout {
@@ -349,9 +387,25 @@ export default function WorkoutsPage() {
 
   function finishSession() {
     if (!activeSession) return;
+    if (sessionExercises.some((exercise) => exercise.changed)) {
+      setFinishChoiceOpen(true);
+      return;
+    }
+    completeSession(false);
+  }
+
+  function completeSession(updatePrescription: boolean) {
+    if (!activeSession) return;
+    const executedExercises: Exercise[] = sessionExercises.map(({ originalExerciseId: _originalExerciseId, changed: _changed, ...exercise }) => {
+      void _originalExerciseId;
+      void _changed;
+      return exercise;
+    });
     setProtocols((current) => current.map((protocol) => protocol.id === activeSession.protocol.id
-      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === activeSession.workout.id ? { ...workout, completedExecutions: (workout.completedExecutions ?? 0) + 1 } : workout) }
+      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === activeSession.workout.id ? { ...workout, exercises: updatePrescription ? executedExercises : workout.exercises, volume: updatePrescription ? calculateWorkoutVolume(executedExercises) : workout.volume, completedExecutions: (workout.completedExecutions ?? 0) + 1 } : workout) }
       : protocol));
+    setFinishChoiceOpen(false);
+    setSessionExercises([]);
     setActiveSession(null);
   }
 
@@ -750,7 +804,9 @@ export default function WorkoutsPage() {
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
-      {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{activeSession.workout.exercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); const seriesDetails = sessionSeriesDetails(exercise); return <button key={exercise.id} type="button" onClick={() => toggleExercise(exercise.id)} className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)] hover:border-blue-500/50"}`}><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong>{seriesDetails ? <span className="mt-2 block space-y-1.5">{seriesDetails.map((series) => <span key={series.label} className="flex items-center justify-between gap-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-xs"><strong className="font-semibold text-[var(--foreground)]">{series.label}</strong><span className="shrink-0 text-[var(--muted)]">{series.load}</span></span>)}</span> : <span className="mt-1 block text-sm text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span>}</span><span className="text-xs font-semibold text-[var(--muted)]">{done ? "Concluído" : "Concluir"}</span></button>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{activeSession.workout.exercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${completedExercises.length / activeSession.workout.exercises.length * 100}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
+      {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{sessionExercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); const configurations = seriesConfigurations(exercise); const seriesDetails = sessionSeriesDetails(exercise); const compatibleNames = compatibleExerciseNames(exercise); return <div key={exercise.id} className={`rounded-2xl border p-4 transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : exercise.changed ? "border-amber-500/40 bg-amber-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}><div className="flex items-start gap-3"><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="block truncate">{exercise.name}</strong>{exercise.changed && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600">Alterado</span>}</div>{seriesDetails ? <div className="mt-2 space-y-1.5">{seriesDetails.map((series) => <div key={series.label} className="flex items-center justify-between gap-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-xs"><strong className="font-semibold text-[var(--foreground)]">{series.label}</strong><span className="shrink-0 text-[var(--muted)]">{series.load}</span></div>)}</div> : <p className="mt-1 text-sm text-[var(--muted)]">{exercise.prescription} · {exercise.load}</p>}</div><button type="button" onClick={() => toggleExercise(exercise.id)} className={`shrink-0 rounded-lg px-2 py-1 text-xs font-semibold ${done ? "text-emerald-600" : "text-blue-500 hover:bg-blue-500/10"}`}>{done ? "Concluído" : "Concluir"}</button></div><div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3"><button type="button" onClick={() => changeSessionSeries(exercise.id, -1)} disabled={configurations.length === 1} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold disabled:opacity-30">− Série</button><span className="text-xs font-semibold text-[var(--muted)]">{configurations.length} {configurations.length === 1 ? "série" : "séries"}</span><button type="button" onClick={() => changeSessionSeries(exercise.id, 1)} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold">＋ Série</button><button type="button" onClick={() => setSwappingExerciseId((current) => current === exercise.id ? null : exercise.id)} className="ml-auto rounded-lg border border-blue-500/30 px-3 py-2 text-xs font-semibold text-blue-500">Trocar exercício</button></div>{swappingExerciseId === exercise.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 sm:grid-cols-2"><label className="text-xs font-medium text-[var(--muted)]">Exercício compatível<select value={exercise.name} onChange={(event) => updateSessionExercise(exercise.id, "name", event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm">{compatibleNames.map((name) => <option key={name}>{name}</option>)}</select></label><label className="text-xs font-medium text-[var(--muted)]">Carga executada<input value={exercise.load} onChange={(event) => updateSessionExercise(exercise.id, "load", event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" /></label><p className="text-[11px] leading-4 text-[var(--muted)] sm:col-span-2">São sugeridos exercícios com o mesmo grupo muscular principal. A troca e a carga ficam registradas nesta sessão.</p></div>}</div>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{sessionExercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${sessionExercises.length ? completedExercises.length / sessionExercises.length * 100 : 0}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
+
+      {finishChoiceOpen && activeSession && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="finish-choice-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-amber-500/10 text-xl text-amber-600">↻</div><h2 id="finish-choice-title" className="mt-4 text-xl font-semibold">Como deseja salvar as alterações?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Você alterou séries, carga ou exercício durante esta sessão. Escolha se essas mudanças valerão apenas hoje ou também para as próximas sessões.</p><div className="mt-6 space-y-2"><Button className="w-full" onClick={() => completeSession(false)}>Somente nesta sessão</Button><Button variant="secondary" className="w-full" onClick={() => completeSession(true)}>Atualizar próximos treinos</Button><Button variant="ghost" className="w-full" onClick={() => setFinishChoiceOpen(false)}>Voltar à sessão</Button></div></Card></div>}
     </MainLayout>
   );
 }
