@@ -13,6 +13,7 @@ type SeriesConfiguration = { method: AdvancedMethod; reps: string; load: string;
 type Exercise = { id: number; name: string; prescription: string; load: string; sets?: number; reps?: string; rest?: string; method?: AdvancedMethod; methodRounds?: number; methodValue?: string; seriesReps?: number[]; methodSeries?: number[]; seriesConfigurations?: SeriesConfiguration[] };
 type SessionExercise = Exercise & { originalExerciseId: number; changed?: boolean };
 type MuscleVolume = { muscle: string; sets: number };
+type WeeklyVolumeImpact = { muscle: string; before: number; after: number; difference: number };
 type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[]; targetExecutions?: number; completedExecutions?: number };
 type Protocol = {
   id: number;
@@ -175,6 +176,39 @@ function calculateProtocolVolume(workouts: Workout[]) {
   return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
 }
 
+function weeklyWorkoutOccurrences(protocol: Protocol, workoutIndex: number) {
+  if (protocol.workouts.length === 0) return 0;
+  const base = Math.floor(protocol.frequency / protocol.workouts.length);
+  return base + (workoutIndex < protocol.frequency % protocol.workouts.length ? 1 : 0);
+}
+
+function calculateWeeklyVolumeImpact(protocol: Protocol, changedWorkoutId: number, executedExercises: Exercise[]): WeeklyVolumeImpact[] {
+  const before = new Map<string, number>();
+  const after = new Map<string, number>();
+
+  protocol.workouts.forEach((workout, index) => {
+    const occurrences = weeklyWorkoutOccurrences(protocol, index);
+    const originalVolume = calculateWorkoutVolume(workout.exercises);
+    const resultingVolume = calculateWorkoutVolume(workout.id === changedWorkoutId ? executedExercises : workout.exercises);
+
+    originalVolume.forEach(({ muscle, sets }) => before.set(muscle, (before.get(muscle) ?? 0) + sets * occurrences));
+    resultingVolume.forEach(({ muscle, sets }) => after.set(muscle, (after.get(muscle) ?? 0) + sets * occurrences));
+  });
+
+  return [...new Set([...before.keys(), ...after.keys()])]
+    .map((muscle) => {
+      const previous = before.get(muscle) ?? 0;
+      const next = after.get(muscle) ?? 0;
+      return { muscle, before: previous, after: next, difference: next - previous };
+    })
+    .filter(({ difference }) => Math.abs(difference) >= 0.01)
+    .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
+}
+
+function formatWeeklySets(value: number) {
+  return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+}
+
 function protocolDurationInWeeks(protocol: Protocol) {
   const parseDate = (value: string) => {
     const [day, month, year] = value.split("/").map(Number);
@@ -227,6 +261,11 @@ export default function WorkoutsPage() {
       (protocol.student.toLocaleLowerCase("pt-BR").includes(normalized) || protocol.objective.toLocaleLowerCase("pt-BR").includes(normalized)),
     );
   }, [protocols, query, status]);
+
+  const weeklyVolumeImpact = useMemo(() => {
+    if (!activeSession) return [];
+    return calculateWeeklyVolumeImpact(activeSession.protocol, activeSession.workout.id, sessionExercises);
+  }, [activeSession, sessionExercises]);
 
   function toggleProtocol(id: number) {
     setExpanded((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -824,7 +863,7 @@ export default function WorkoutsPage() {
 
       {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{sessionExercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); const configurations = seriesConfigurations(exercise); const seriesDetails = sessionSeriesDetails(exercise); const compatibleNames = compatibleExerciseNames(exercise); return <div key={exercise.id} className={`rounded-2xl border p-4 transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : exercise.changed ? "border-amber-500/40 bg-amber-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}><div className="flex items-start gap-3"><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="block truncate">{exercise.name}</strong>{exercise.changed && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600">Alterado</span>}</div>{seriesDetails ? <div className="mt-2 space-y-1.5">{seriesDetails.map((series) => <div key={series.label} className="flex items-center justify-between gap-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-xs"><strong className="font-semibold text-[var(--foreground)]">{series.label}</strong><span className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => adjustSessionLoad(exercise.id, -2.5, series.index)} className="grid size-7 place-items-center rounded-md border border-[var(--border)] font-bold" aria-label={`Diminuir carga da série ${series.index + 1}`}>−</button><span className="min-w-12 text-center font-semibold text-[var(--muted)]">{series.load}</span><button type="button" onClick={() => adjustSessionLoad(exercise.id, 2.5, series.index)} className="grid size-7 place-items-center rounded-md border border-[var(--border)] font-bold" aria-label={`Aumentar carga da série ${series.index + 1}`}>＋</button></span></div>)}</div> : <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-sm text-[var(--muted)]">{exercise.prescription}</span><span className="flex items-center gap-1"><button type="button" onClick={() => adjustSessionLoad(exercise.id, -2.5)} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] font-bold" aria-label={`Diminuir carga de ${exercise.name}`}>−</button><strong className="min-w-14 text-center text-sm">{exercise.load}</strong><button type="button" onClick={() => adjustSessionLoad(exercise.id, 2.5)} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] font-bold" aria-label={`Aumentar carga de ${exercise.name}`}>＋</button></span></div>}</div><button type="button" onClick={() => toggleExercise(exercise.id)} className={`shrink-0 rounded-lg px-2 py-1 text-xs font-semibold ${done ? "text-emerald-600" : "text-blue-500 hover:bg-blue-500/10"}`}>{done ? "Concluído" : "Concluir"}</button></div><div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3"><button type="button" onClick={() => changeSessionSeries(exercise.id, -1)} disabled={configurations.length === 1} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold disabled:opacity-30">− Série</button><span className="text-xs font-semibold text-[var(--muted)]">{configurations.length} {configurations.length === 1 ? "série" : "séries"}</span><button type="button" onClick={() => changeSessionSeries(exercise.id, 1)} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold">＋ Série</button><button type="button" onClick={() => setSwappingExerciseId((current) => current === exercise.id ? null : exercise.id)} className="ml-auto rounded-lg border border-blue-500/30 px-3 py-2 text-xs font-semibold text-blue-500">Trocar exercício</button></div>{swappingExerciseId === exercise.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 sm:grid-cols-2"><label className="text-xs font-medium text-[var(--muted)]">Exercício compatível<select value={exercise.name} onChange={(event) => updateSessionExercise(exercise.id, "name", event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm">{compatibleNames.map((name) => <option key={name}>{name}</option>)}</select></label><label className="text-xs font-medium text-[var(--muted)]">Carga executada<input value={exercise.load} onChange={(event) => updateSessionExercise(exercise.id, "load", event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" /></label><p className="text-[11px] leading-4 text-[var(--muted)] sm:col-span-2">São sugeridos exercícios com o mesmo grupo muscular principal. A troca e a carga ficam registradas nesta sessão.</p></div>}</div>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{sessionExercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${sessionExercises.length ? completedExercises.length / sessionExercises.length * 100 : 0}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
 
-      {finishChoiceOpen && activeSession && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="finish-choice-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-amber-500/10 text-xl text-amber-600">↻</div><h2 id="finish-choice-title" className="mt-4 text-xl font-semibold">Como deseja salvar as alterações?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Você alterou séries, carga ou exercício durante esta sessão. Escolha se essas mudanças valerão apenas hoje ou também para as próximas sessões.</p><div className="mt-6 space-y-2"><Button className="w-full" onClick={() => completeSession(false)}>Somente nesta sessão</Button><Button variant="secondary" className="w-full" onClick={() => completeSession(true)}>Atualizar próximos treinos</Button><Button variant="ghost" className="w-full" onClick={() => setFinishChoiceOpen(false)}>Voltar à sessão</Button></div></Card></div>}
+      {finishChoiceOpen && activeSession && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="finish-choice-title"><Card className="max-h-[90vh] w-full max-w-md overflow-y-auto"><div className="grid size-12 place-items-center rounded-2xl bg-amber-500/10 text-xl text-amber-600">↻</div><h2 id="finish-choice-title" className="mt-4 text-xl font-semibold">Como deseja salvar as alterações?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Você alterou séries, carga ou exercício durante esta sessão. Escolha se essas mudanças valerão apenas hoje ou também para as próximas sessões.</p>{weeklyVolumeImpact.length > 0 && <div className="mt-4 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4"><p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Impacto no volume semanal estimado</p><p className="mt-1 text-xs leading-5 text-[var(--muted)]">Considerando a frequência atual de {activeSession.protocol.frequency} treinos por semana.</p><div className="mt-3 space-y-2">{weeklyVolumeImpact.map((impact) => <div key={impact.muscle} className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface)] px-3 py-2"><div><p className="text-sm font-medium">{impact.muscle}</p><p className="text-xs text-[var(--muted)]">{formatWeeklySets(impact.before)} → {formatWeeklySets(impact.after)} séries/semana</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${impact.difference < 0 ? "bg-rose-500/10 text-rose-600 dark:text-rose-300" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"}`}>{impact.difference > 0 ? "+" : ""}{formatWeeklySets(impact.difference)}</span></div>)}</div></div>}<div className="mt-6 space-y-2"><Button className="w-full" onClick={() => completeSession(false)}>Somente nesta sessão</Button><Button variant="secondary" className="w-full" onClick={() => completeSession(true)}>Atualizar próximos treinos</Button><Button variant="ghost" className="w-full" onClick={() => setFinishChoiceOpen(false)}>Voltar à sessão</Button></div></Card></div>}
     </MainLayout>
   );
 }
