@@ -7,6 +7,7 @@ import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
+import { prescriptionExerciseCatalog as exerciseCatalog } from "@/lib/exercise-library";
 
 type AdvancedMethod = "Convencional" | "Drop-set" | "Rest-pause" | "Cluster set" | "Pirâmide" | "Myo-reps" | "Bi-set";
 type SeriesConfiguration = { method: AdvancedMethod; reps: string; load: string; blocks?: number[] };
@@ -58,21 +59,10 @@ const initialProtocols: Protocol[] = [
 
 const students = ["João Mendes", "Mariana Costa", "Carlos Lima", "Ana Souza", "Paulo Rocha", "Beatriz Alves"];
 
-const exerciseCatalog = [
-  { name: "Supino reto com barra", muscles: [{ muscle: "Peitoral", factor: 1 }, { muscle: "Tríceps", factor: .5 }, { muscle: "Deltoide anterior", factor: .5 }] },
-  { name: "Supino inclinado com halteres", muscles: [{ muscle: "Peitoral", factor: 1 }, { muscle: "Tríceps", factor: .5 }, { muscle: "Deltoide anterior", factor: .5 }] },
-  { name: "Crucifixo no cabo", muscles: [{ muscle: "Peitoral", factor: 1 }] },
-  { name: "Tríceps na polia", muscles: [{ muscle: "Tríceps", factor: 1 }] },
-  { name: "Puxada alta", muscles: [{ muscle: "Costas", factor: 1 }, { muscle: "Bíceps", factor: .5 }] },
-  { name: "Remada baixa", muscles: [{ muscle: "Costas", factor: 1 }, { muscle: "Bíceps", factor: .5 }, { muscle: "Deltoide posterior", factor: .5 }] },
-  { name: "Rosca direta", muscles: [{ muscle: "Bíceps", factor: 1 }] },
-  { name: "Agachamento livre", muscles: [{ muscle: "Quadríceps", factor: 1 }, { muscle: "Glúteos", factor: .5 }, { muscle: "Isquiotibiais", factor: .5 }] },
-  { name: "Leg press", muscles: [{ muscle: "Quadríceps", factor: 1 }, { muscle: "Glúteos", factor: .5 }] },
-  { name: "Mesa flexora", muscles: [{ muscle: "Isquiotibiais", factor: 1 }] },
-  { name: "Agachamento goblet", muscles: [{ muscle: "Quadríceps", factor: 1 }, { muscle: "Glúteos", factor: .5 }] },
-  { name: "Remada articulada", muscles: [{ muscle: "Costas", factor: 1 }, { muscle: "Bíceps", factor: .5 }] },
-  { name: "Supino na máquina", muscles: [{ muscle: "Peitoral", factor: 1 }, { muscle: "Tríceps", factor: .5 }] },
-];
+function matchesExerciseSearch(exercise: { name: string; aliases: string }, query: string) {
+  const normalized = query.trim().toLocaleLowerCase("pt-BR");
+  return `${exercise.name} ${exercise.aliases}`.toLocaleLowerCase("pt-BR").includes(normalized);
+}
 
 function seriesFromPrescription(prescription: string) {
   return Number(prescription.match(/\d+/)?.[0] ?? 0);
@@ -770,7 +760,7 @@ export default function WorkoutsPage() {
                         </div>}
                       </div>;
                     })}</div>
-                    <div className="relative mt-3"><input value={exerciseSearchWorkout === item.id ? exerciseToAdd : ""} onFocus={() => { setExerciseSearchWorkout(item.id); setExerciseSuggestionsOpen(true); }} onChange={(event) => { setExerciseSearchWorkout(item.id); setExerciseSuggestionsOpen(true); setExerciseToAdd(event.target.value); }} placeholder="Pesquisar e adicionar exercício" autoComplete="off" className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-xs outline-none focus:border-blue-500" />{exerciseSearchWorkout === item.id && exerciseSuggestionsOpen && exerciseToAdd.trim() && <div className="absolute left-0 right-0 top-10 z-30 max-h-52 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-2xl">{exerciseCatalog.filter((exercise) => exercise.name.toLocaleLowerCase("pt-BR").includes(exerciseToAdd.toLocaleLowerCase("pt-BR"))).map((exercise) => <button key={exercise.name} type="button" onClick={() => addExerciseToEditorWorkout(item.id, item.exercises, exercise.name)} className="block w-full rounded-lg px-3 py-2 text-left text-xs text-[var(--foreground)] hover:bg-blue-500/10 hover:text-blue-500">{exercise.name}</button>)}{exerciseCatalog.every((exercise) => !exercise.name.toLocaleLowerCase("pt-BR").includes(exerciseToAdd.toLocaleLowerCase("pt-BR"))) && <p className="px-3 py-2 text-xs text-[var(--muted)]">Nenhum exercício encontrado</p>}</div>}</div>
+                    <div className="relative mt-3"><input value={exerciseSearchWorkout === item.id ? exerciseToAdd : ""} onFocus={() => { setExerciseSearchWorkout(item.id); setExerciseSuggestionsOpen(true); }} onChange={(event) => { setExerciseSearchWorkout(item.id); setExerciseSuggestionsOpen(true); setExerciseToAdd(event.target.value); }} placeholder="Pesquisar e adicionar exercício" autoComplete="off" className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-xs outline-none focus:border-blue-500" />{exerciseSearchWorkout === item.id && exerciseSuggestionsOpen && exerciseToAdd.trim() && <div className="absolute left-0 right-0 top-10 z-30 max-h-52 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-2xl">{exerciseCatalog.filter((exercise) => matchesExerciseSearch(exercise, exerciseToAdd)).map((exercise) => <button key={exercise.name} type="button" onClick={() => addExerciseToEditorWorkout(item.id, item.exercises, exercise.name)} className="block w-full rounded-lg px-3 py-2 text-left text-xs text-[var(--foreground)] hover:bg-blue-500/10 hover:text-blue-500"><span className="block font-medium">{exercise.name}</span>{exercise.aliases && <span className="mt-0.5 block text-[10px] text-[var(--muted)]">{exercise.aliases}</span>}</button>)}{exerciseCatalog.every((exercise) => !matchesExerciseSearch(exercise, exerciseToAdd)) && <p className="px-3 py-2 text-xs text-[var(--muted)]">Nenhum exercício encontrado</p>}</div>}</div>
                     <div className="mt-4 border-t border-[var(--border)] pt-3"><div className="mb-3 flex items-center justify-between"><div><p className="text-xs font-semibold">Volume do treino</p><p className="text-[11px] text-[var(--muted)]">Distribuição por grupo muscular</p></div><Badge tone="info">{total.toLocaleString("pt-BR")} séries</Badge></div><div className="space-y-2.5">{item.volume.map((volume)=><div key={volume.muscle}><div className="mb-1 flex justify-between text-xs"><span>{volume.muscle}</span><strong>{volume.sets.toLocaleString("pt-BR")}</strong></div><div className="h-2.5 overflow-hidden rounded-full bg-[var(--surface)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{width:`${volume.sets/maximum*100}%`}}/></div></div>)}</div></div>
                   </article>;
                 })}

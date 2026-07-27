@@ -7,42 +7,18 @@ import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
-
-type MuscleContribution = { muscle: string; factor: number; role: "Principal" | "Secundário" };
-type Exercise = {
-  id: number;
-  name: string;
-  aliases: string;
-  equipment: string;
-  movement: string;
-  type: string;
-  laterality: string;
-  level: string;
-  origin: "Sistema" | "Personalizado";
-  muscles: MuscleContribution[];
-  instructions: string;
-  active: boolean;
-};
-
-const muscleGroups = ["Peitoral", "Costas", "Quadríceps", "Glúteos", "Isquiotibiais", "Panturrilhas", "Deltoide anterior", "Deltoide lateral", "Deltoide posterior", "Tríceps", "Bíceps", "Abdômen"];
-const equipments = ["Barra", "Halteres", "Cabo", "Máquina", "Peso corporal", "Elástico", "Outro"];
-const movements = ["Empurrar horizontal", "Empurrar vertical", "Puxar horizontal", "Puxar vertical", "Agachar", "Dominância de quadril", "Flexão de joelho", "Extensão de joelho", "Isolado", "Estabilização"];
-
-const initialExercises: Exercise[] = [
-  { id: 1, name: "Supino reto com barra", aliases: "Supino plano", equipment: "Barra", movement: "Empurrar horizontal", type: "Composto", laterality: "Bilateral", level: "Intermediário", origin: "Sistema", active: true, muscles: [{ muscle: "Peitoral", factor: 1, role: "Principal" }, { muscle: "Tríceps", factor: .5, role: "Secundário" }, { muscle: "Deltoide anterior", factor: .5, role: "Secundário" }], instructions: "Manter escápulas estabilizadas, pés apoiados e controlar a descida da barra." },
-  { id: 2, name: "Supino inclinado com halteres", aliases: "Supino 30 graus", equipment: "Halteres", movement: "Empurrar horizontal", type: "Composto", laterality: "Bilateral", level: "Intermediário", origin: "Sistema", active: true, muscles: [{ muscle: "Peitoral", factor: 1, role: "Principal" }, { muscle: "Deltoide anterior", factor: .5, role: "Secundário" }, { muscle: "Tríceps", factor: .5, role: "Secundário" }], instructions: "Ajustar o banco entre 20 e 35 graus e manter os punhos alinhados." },
-  { id: 3, name: "Remada baixa no cabo", aliases: "Remada sentada", equipment: "Cabo", movement: "Puxar horizontal", type: "Composto", laterality: "Bilateral", level: "Iniciante", origin: "Sistema", active: true, muscles: [{ muscle: "Costas", factor: 1, role: "Principal" }, { muscle: "Bíceps", factor: .5, role: "Secundário" }, { muscle: "Deltoide posterior", factor: .5, role: "Secundário" }], instructions: "Iniciar o movimento pelas escápulas e evitar compensação excessiva do tronco." },
-  { id: 4, name: "Puxada alta pronada", aliases: "Pulley frente", equipment: "Cabo", movement: "Puxar vertical", type: "Composto", laterality: "Bilateral", level: "Iniciante", origin: "Sistema", active: true, muscles: [{ muscle: "Costas", factor: 1, role: "Principal" }, { muscle: "Bíceps", factor: .5, role: "Secundário" }], instructions: "Conduzir a barra à região superior do tórax sem projetar a cabeça à frente." },
-  { id: 5, name: "Agachamento livre com barra", aliases: "Agachamento costas", equipment: "Barra", movement: "Agachar", type: "Composto", laterality: "Bilateral", level: "Avançado", origin: "Sistema", active: true, muscles: [{ muscle: "Quadríceps", factor: 1, role: "Principal" }, { muscle: "Glúteos", factor: .5, role: "Secundário" }, { muscle: "Isquiotibiais", factor: .5, role: "Secundário" }], instructions: "Manter o centro de pressão estável, joelhos acompanhando os pés e coluna organizada." },
-  { id: 6, name: "Levantamento terra romeno", aliases: "Stiff", equipment: "Barra", movement: "Dominância de quadril", type: "Composto", laterality: "Bilateral", level: "Intermediário", origin: "Sistema", active: true, muscles: [{ muscle: "Isquiotibiais", factor: 1, role: "Principal" }, { muscle: "Glúteos", factor: .5, role: "Secundário" }], instructions: "Projetar o quadril para trás, manter a barra próxima ao corpo e preservar a coluna neutra." },
-  { id: 7, name: "Cadeira extensora", aliases: "Extensão de joelhos", equipment: "Máquina", movement: "Extensão de joelho", type: "Isolado", laterality: "Bilateral", level: "Iniciante", origin: "Sistema", active: true, muscles: [{ muscle: "Quadríceps", factor: 1, role: "Principal" }], instructions: "Ajustar o eixo da máquina ao joelho e executar com controle." },
-  { id: 8, name: "Elevação lateral com halteres", aliases: "Abdução de ombros", equipment: "Halteres", movement: "Isolado", type: "Isolado", laterality: "Bilateral", level: "Iniciante", origin: "Sistema", active: true, muscles: [{ muscle: "Deltoide lateral", factor: 1, role: "Principal" }], instructions: "Elevar os braços sem impulso, mantendo ombros organizados e cotovelos levemente flexionados." },
-];
+import {
+  equipments,
+  exerciseLibrary,
+  LibraryExercise as Exercise,
+  movements,
+  muscleGroups,
+} from "@/lib/exercise-library";
 
 function contributionLabel(factor: number) { return factor === 1 ? "1 série" : `${factor.toLocaleString("pt-BR")} série`; }
 
 export default function ExercisesPage() {
-  const [exercises, setExercises] = useState(initialExercises);
+  const [exercises, setExercises] = useState(exerciseLibrary);
   const [query, setQuery] = useState("");
   const [muscle, setMuscle] = useState("Todos");
   const [equipment, setEquipment] = useState("Todos");
