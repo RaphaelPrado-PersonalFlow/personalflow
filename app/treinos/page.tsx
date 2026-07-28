@@ -1,13 +1,14 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
-import { prescriptionExerciseCatalog as exerciseCatalog } from "@/lib/exercise-library";
+import { prescriptionExerciseCatalog as systemExerciseCatalog } from "@/lib/exercise-library";
+import { exerciseRepository } from "@/services/exercise-repository";
 
 type AdvancedMethod = "Convencional" | "Drop-set" | "Rest-pause" | "Cluster set" | "Pirâmide" | "Myo-reps" | "Bi-set";
 type SeriesConfiguration = { method: AdvancedMethod; reps: string; load: string; blocks?: number[] };
@@ -148,9 +149,9 @@ function methodConfiguration(_method: AdvancedMethod): { rounds: string; value: 
   return undefined;
 }
 
-function calculateWorkoutVolume(exercises: Exercise[]) {
+function calculateWorkoutVolume(exercises: Exercise[], catalog = systemExerciseCatalog) {
   const totals = exercises.reduce<Record<string, number>>((result, exercise) => {
-    const catalogExercise = exerciseCatalog.find((item) => item.name === exercise.name);
+    const catalogExercise = catalog.find((item) => item.name === exercise.name);
     const series = exercise.sets ?? seriesFromPrescription(exercise.prescription);
     catalogExercise?.muscles.forEach((item) => { result[item.muscle] = (result[item.muscle] ?? 0) + series * item.factor; });
     return result;
@@ -172,14 +173,14 @@ function weeklyWorkoutOccurrences(protocol: Protocol, workoutIndex: number) {
   return base + (workoutIndex < protocol.frequency % protocol.workouts.length ? 1 : 0);
 }
 
-function calculateWeeklyVolumeImpact(protocol: Protocol, changedWorkoutId: number, executedExercises: Exercise[]): WeeklyVolumeImpact[] {
+function calculateWeeklyVolumeImpact(protocol: Protocol, changedWorkoutId: number, executedExercises: Exercise[], catalog = systemExerciseCatalog): WeeklyVolumeImpact[] {
   const before = new Map<string, number>();
   const after = new Map<string, number>();
 
   protocol.workouts.forEach((workout, index) => {
     const occurrences = weeklyWorkoutOccurrences(protocol, index);
-    const originalVolume = calculateWorkoutVolume(workout.exercises);
-    const resultingVolume = calculateWorkoutVolume(workout.id === changedWorkoutId ? executedExercises : workout.exercises);
+    const originalVolume = calculateWorkoutVolume(workout.exercises, catalog);
+    const resultingVolume = calculateWorkoutVolume(workout.id === changedWorkoutId ? executedExercises : workout.exercises, catalog);
 
     originalVolume.forEach(({ muscle, sets }) => before.set(muscle, (before.get(muscle) ?? 0) + sets * occurrences));
     resultingVolume.forEach(({ muscle, sets }) => after.set(muscle, (after.get(muscle) ?? 0) + sets * occurrences));
@@ -219,6 +220,7 @@ function suggestedWorkoutExecutions(protocol: Protocol, workoutIndex: number) {
 }
 
 export default function WorkoutsPage() {
+  const [exerciseCatalog, setExerciseCatalog] = useState(systemExerciseCatalog);
   const [protocols, setProtocols] = useState(initialProtocols);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Todos");
@@ -244,6 +246,15 @@ export default function WorkoutsPage() {
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: number } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
 
+  useEffect(() => {
+    exerciseRepository.listCustom().then((customExercises) => {
+      const customCatalog = customExercises
+        .filter((exercise) => exercise.active)
+        .map(({ name, aliases, muscles }) => ({ name, aliases, muscles }));
+      setExerciseCatalog([...customCatalog, ...systemExerciseCatalog]);
+    });
+  }, []);
+
   const filteredProtocols = useMemo(() => {
     const normalized = query.toLocaleLowerCase("pt-BR");
     return protocols.filter((protocol) =>
@@ -254,8 +265,8 @@ export default function WorkoutsPage() {
 
   const weeklyVolumeImpact = useMemo(() => {
     if (!activeSession) return [];
-    return calculateWeeklyVolumeImpact(activeSession.protocol, activeSession.workout.id, sessionExercises);
-  }, [activeSession, sessionExercises]);
+    return calculateWeeklyVolumeImpact(activeSession.protocol, activeSession.workout.id, sessionExercises, exerciseCatalog);
+  }, [activeSession, exerciseCatalog, sessionExercises]);
 
   function toggleProtocol(id: number) {
     setExpanded((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -449,7 +460,7 @@ export default function WorkoutsPage() {
       return exercise;
     });
     setProtocols((current) => current.map((protocol) => protocol.id === activeSession.protocol.id
-      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === activeSession.workout.id ? { ...workout, exercises: updatePrescription ? executedExercises : workout.exercises, volume: updatePrescription ? calculateWorkoutVolume(executedExercises) : workout.volume, completedExecutions: (workout.completedExecutions ?? 0) + 1 } : workout) }
+      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === activeSession.workout.id ? { ...workout, exercises: updatePrescription ? executedExercises : workout.exercises, volume: updatePrescription ? calculateWorkoutVolume(executedExercises, exerciseCatalog) : workout.volume, completedExecutions: (workout.completedExecutions ?? 0) + 1 } : workout) }
       : protocol));
     setFinishChoiceOpen(false);
     setSessionExercises([]);
@@ -625,7 +636,7 @@ export default function WorkoutsPage() {
     setProtocols((current) => current.map((protocol) => protocol.id === prescriptionEditor.protocolId
       ? { ...protocol, workouts: protocol.workouts.map((workout) => {
         const exercises = allDrafts[workout.id] ?? workout.exercises;
-        return { ...workout, exercises, volume: calculateWorkoutVolume(exercises) };
+        return { ...workout, exercises, volume: calculateWorkoutVolume(exercises, exerciseCatalog) };
       }) }
       : protocol));
     setPrescriptionEditor(null);
@@ -723,7 +734,7 @@ export default function WorkoutsPage() {
         if (!protocol || !activeWorkout) return null;
         const editorWorkouts = protocol.workouts.map((item) => {
           const exercises = item.id === activeWorkout.id ? draftExercises : workoutDrafts[item.id] ?? item.exercises;
-          return { ...item, exercises, volume: calculateWorkoutVolume(exercises) };
+          return { ...item, exercises, volume: calculateWorkoutVolume(exercises, exerciseCatalog) };
         });
         const protocolVolume = calculateProtocolVolume(editorWorkouts);
         const protocolTotal = protocolVolume.reduce((total, item) => total + item.sets, 0);
@@ -781,7 +792,7 @@ export default function WorkoutsPage() {
         if (!protocol || !activeWorkout) return null;
         const editorWorkouts = protocol.workouts.map((item) => {
           const exercises = item.id === activeWorkout.id ? draftExercises : workoutDrafts[item.id] ?? item.exercises;
-          return { ...item, exercises, volume: calculateWorkoutVolume(exercises) };
+          return { ...item, exercises, volume: calculateWorkoutVolume(exercises, exerciseCatalog) };
         });
         const protocolVolume = calculateProtocolVolume(editorWorkouts);
         const selectedWorkout = volumeView?.scope === "workout" ? editorWorkouts.find((item) => item.id === volumeView.workoutId) : undefined;
@@ -837,7 +848,7 @@ export default function WorkoutsPage() {
         const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);
         const workout = protocol?.workouts.find((item) => item.id === prescriptionEditor.workoutId);
         if (!protocol || !workout) return null;
-        const previewVolume = calculateWorkoutVolume(draftExercises);
+        const previewVolume = calculateWorkoutVolume(draftExercises, exerciseCatalog);
         return <div className="fixed inset-0 z-[65] overflow-y-auto bg-slate-950/90 p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="prescription-editor-title"><div className="mx-auto my-2 w-full max-w-6xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl"><header className="sticky top-0 z-10 flex items-start justify-between gap-4 rounded-t-2xl border-b border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor de prescrição</p><h2 id="prescription-editor-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.frequency}× por semana</p></div><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-9 shrink-0 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></header>
           <div className="grid gap-5 p-4 sm:p-6 lg:grid-cols-[1.5fr_1fr]">
             <section><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><label className="text-sm font-medium">Treino<select value={workout.id} onChange={(event) => selectEditorWorkout(protocol.id, Number(event.target.value))} className="mt-2 h-11 w-full min-w-52 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{protocol.workouts.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.focus}</option>)}</select></label><div className="flex flex-1 flex-col gap-2 sm:flex-row sm:justify-end"><label className="min-w-0 flex-1 text-sm font-medium">Buscar exercício<input list="prescription-exercise-options" value={exerciseToAdd} onChange={(event) => setExerciseToAdd(event.target.value)} placeholder="Comece a digitar o nome" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm outline-none focus:border-blue-500" /><datalist id="prescription-exercise-options">{exerciseCatalog.map((exercise) => <option key={exercise.name} value={exercise.name} />)}</datalist></label><Button className="sm:mb-0" onClick={addDraftExercise}>＋ Adicionar</Button></div></div>
