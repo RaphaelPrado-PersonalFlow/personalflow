@@ -22,6 +22,7 @@ type WeeklyVolumeImpact = { muscle: string; before: number; after: number; diffe
 export type Workout = { id: number; name: string; focus: string; duration: number; exercises: Exercise[]; volume: MuscleVolume[]; targetExecutions?: number; completedExecutions?: number };
 export type Protocol = {
   id: number;
+  name?: string;
   student: string;
   objective: string;
   frequency: number;
@@ -273,6 +274,9 @@ export default function WorkoutsPage() {
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: number } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
   const [incompleteFinishOpen, setIncompleteFinishOpen] = useState(false);
+  const [periodizationOpen, setPeriodizationOpen] = useState(false);
+  const [periodizationCount, setPeriodizationCount] = useState(1);
+  const [periodizationWeeks, setPeriodizationWeeks] = useState(1);
 
   useEffect(() => {
     exerciseRepository.listCustom().then((customExercises) => {
@@ -318,6 +322,7 @@ export default function WorkoutsPage() {
       setPrescriptionEditor({ protocolId, workoutId });
       setWorkoutDrafts(Object.fromEntries(protocol.workouts.map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
       setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
+      if (searchParams.get("periodizar") === "1") setPeriodizationOpen(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [searchParams]);
@@ -445,6 +450,27 @@ export default function WorkoutsPage() {
       workouts: protocol.workouts.map((workout) => copyWorkout(workout, workout.name)),
     };
     setProtocols((current) => [copy, ...current]);
+  }
+
+  function updateProtocolDetails(protocolId: number, field: "name" | "start" | "end", value: string) {
+    setProtocols((current) => current.map((item) => item.id === protocolId ? { ...item, [field]: value } : item));
+  }
+
+  function createPeriodization(protocol: Protocol) {
+    const copies = Array.from({ length: periodizationCount }, (_, index) => {
+      const protocolId = Date.now() + index;
+      return {
+        ...protocol,
+        id: protocolId,
+        name: `${protocol.name ?? protocol.objective} · Período ${index + 2}`,
+        status: "Programado" as const,
+        start: `Após período ${index + 1}`,
+        end: `${periodizationWeeks} ${periodizationWeeks === 1 ? "semana" : "semanas"}`,
+        workouts: protocol.workouts.map((workout) => copyWorkout(workout, workout.name)),
+      };
+    });
+    setProtocols((current) => [...current, ...copies]);
+    setPeriodizationOpen(false);
   }
 
   function duplicateWorkout(protocolId: number, workout: Workout) {
@@ -764,13 +790,6 @@ export default function WorkoutsPage() {
       <div className="space-y-7">
         <PageHeader title="Treinos" description="Crie protocolos, prescreva treinos e acompanhe cada sessão." action={<Button onClick={() => setNewProtocolOpen(true)}>＋ Novo protocolo</Button>} />
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard title="Protocolos ativos" value={activeCount} detail={`${protocols.length} protocolos cadastrados`} tone="blue" />
-          <StatCard title="Treinos prescritos" value={workoutCount} detail="Nos protocolos atuais" tone="green" />
-          <StatCard title="Sessões hoje" value={7} detail="2 já concluídas" tone="violet" />
-          <StatCard title="Fichas para revisar" value={2} detail="Nos próximos 7 dias" tone="amber" />
-        </section>
-
         <Card className="p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <label className="relative block w-full md:max-w-md"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]">⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar aluno ou objetivo" className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] pl-10 pr-4 text-sm outline-none focus:border-blue-500" /></label>
@@ -828,6 +847,13 @@ export default function WorkoutsPage() {
             </Card>;
           })}
         </section>
+
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard title="Protocolos ativos" value={activeCount} detail={`${protocols.length} protocolos cadastrados`} tone="blue" />
+          <StatCard title="Treinos prescritos" value={workoutCount} detail="Nos protocolos atuais" tone="green" />
+          <StatCard title="Sessões hoje" value={7} detail="2 já concluídas" tone="violet" />
+          <StatCard title="Fichas para revisar" value={2} detail="Nos próximos 7 dias" tone="amber" />
+        </section>
       </div>
 
       {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Defina o planejamento inicial do aluno.</p></div><button type="button" onClick={() => setNewProtocolOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select name="student" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{students.map((student) => <option key={student}>{student}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setNewProtocolOpen(false)}>Cancelar</Button><Button type="submit">Criar protocolo</Button></div></form></div>}
@@ -847,9 +873,11 @@ export default function WorkoutsPage() {
         return <div className="fixed inset-0 z-[65] bg-slate-950/90 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="prescription-board-title">
           <div onClick={() => volumeView && setVolumeView(null)} className="relative mx-auto flex h-[100dvh] w-full max-w-[1600px] flex-col overflow-hidden bg-[var(--surface)] shadow-2xl sm:h-[calc(100dvh-2.5rem)] sm:rounded-2xl sm:border sm:border-[var(--border)]">
             <header className="z-20 flex shrink-0 flex-col gap-3 border-b border-[var(--border)] bg-[var(--surface)] p-4 text-[var(--foreground)] sm:flex-row sm:items-center sm:justify-between sm:px-6">
-              <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor semanal de prescrição</p><h2 id="prescription-board-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.frequency}× por semana</p></div>
-              <div className="flex items-stretch gap-2"><button type="button" onClick={(event) => { event.stopPropagation(); setVolumeView({ scope: "protocol" }); }} className="min-w-0 flex-1 rounded-xl border border-blue-600 bg-blue-600 px-3 py-2 text-left text-xs text-white shadow-lg shadow-blue-600/20 sm:flex-none"><strong className="block text-sm">{protocolTotal.toLocaleString("pt-BR")} séries · {protocolVolume.length} grupos</strong><span>Revisar volume semanal</span></button><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
+              <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor de prescrição</p><h2 id="prescription-board-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.name ?? protocol.objective} · {protocol.frequency}× por semana</p></div>
+              <div className="flex flex-wrap items-stretch justify-end gap-2"><Button variant="secondary" onClick={() => setPeriodizationOpen(true)}>Periodizar</Button><button type="button" onClick={(event) => { event.stopPropagation(); setVolumeView({ scope: "protocol" }); }} className="min-w-0 flex-1 rounded-xl border border-blue-600 bg-blue-600 px-3 py-2 text-left text-xs text-white shadow-lg shadow-blue-600/20 sm:flex-none"><strong className="block text-sm">{protocolTotal.toLocaleString("pt-BR")} séries · {protocolVolume.length} grupos</strong><span>Revisar volume semanal</span></button><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
             </header>
+            <div className="flex gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3 sm:px-6">{protocols.filter((item) => item.student === protocol.student).map((item, index) => <button key={item.id} type="button" onClick={() => item.workouts[0] && openPrescriptionEditor(item.id, item.workouts[0])} className={`shrink-0 rounded-xl border px-4 py-2 text-left text-xs ${item.id === protocol.id ? "border-blue-500 bg-blue-500/10 text-blue-500" : "border-[var(--border)] bg-[var(--surface)]"}`}><strong className="block">{item.name ?? `Protocolo ${index + 1}`}</strong><span className="mt-0.5 block text-[10px] text-[var(--muted)]">{item.start} · {item.end}</span></button>)}</div>
+            <div className="grid gap-3 border-b border-[var(--border)] px-4 py-3 sm:grid-cols-3 sm:px-6"><label className="text-xs text-[var(--muted)]">Nome do protocolo<input value={protocol.name ?? protocol.objective} onChange={(event) => updateProtocolDetails(protocol.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={protocol.start} onChange={(event) => updateProtocolDetails(protocol.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término ou duração<input value={protocol.end} onChange={(event) => updateProtocolDetails(protocol.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label></div>
 
             <section className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"><div className="mb-4"><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Clique em um exercício para abrir ou recolher seus campos de prescrição.</p></div>
               <div className="overflow-x-auto pb-2"><div className="grid auto-cols-[310px] grid-flow-col items-start gap-4 xl:auto-cols-[minmax(300px,1fr)]">
@@ -889,6 +917,8 @@ export default function WorkoutsPage() {
           </div>
         </div>;
       })()}
+
+      {periodizationOpen && prescriptionEditor && (() => { const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId); if (!protocol) return null; return <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="periodization-title"><Card className="w-full max-w-md"><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Periodização</p><h2 id="periodization-title" className="mt-2 text-xl font-semibold">Duplicar este protocolo</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Crie períodos consecutivos que poderão ser nomeados e editados separadamente nas abas da prescrição.</p><div className="mt-6 space-y-4"><div><span className="text-sm font-medium">Quantos protocolos deseja criar?</span><div className="mt-2 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--background)] p-2"><button type="button" onClick={() => setPeriodizationCount((value) => Math.max(1, value - 1))} className="grid size-10 place-items-center rounded-lg bg-[var(--surface-raised)] text-lg">−</button><strong>{periodizationCount}</strong><button type="button" onClick={() => setPeriodizationCount((value) => Math.min(12, value + 1))} className="grid size-10 place-items-center rounded-lg bg-[var(--surface-raised)] text-lg">＋</button></div></div><label className="block text-sm font-medium">Duração de cada protocolo<select value={periodizationWeeks} onChange={(event) => setPeriodizationWeeks(Number(event.target.value))} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1,2,3,4,5,6,8,12].map((weeks) => <option key={weeks} value={weeks}>{weeks} {weeks === 1 ? "semana" : "semanas"}</option>)}</select></label></div><div className="mt-6 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={() => setPeriodizationOpen(false)}>Cancelar</Button><Button onClick={() => createPeriodization(protocol)}>Criar períodos</Button></div></Card></div>; })()}
 
       {Boolean(0) && prescriptionEditor && (() => {
         const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);

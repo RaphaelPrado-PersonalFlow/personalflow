@@ -54,8 +54,16 @@ export default function StudentWorkoutsPage({ params }: Props) {
         <PageHeader
           title={protocol.student}
           description={`${protocol.objective} · ${protocol.frequency}× por semana · ${protocol.start} a ${protocol.end}`}
-          action={<Button variant="secondary" onClick={() => router.push("/treinos")}>← Todos os alunos</Button>}
+          action={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => router.push("/treinos")}>← Todos os alunos</Button><Button onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}&periodizar=1`; }}>＋ Adicionar protocolo</Button></div>}
         />
+
+        <Card className="p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Protocolos periodizados</p>
+          <div className="mt-3 flex gap-2 overflow-x-auto">
+            <button type="button" className="shrink-0 rounded-xl border border-blue-500 bg-blue-500/10 px-4 py-3 text-left text-sm text-blue-500"><strong className="block">{protocol.name ?? "Protocolo atual"}</strong><span className="mt-1 block text-xs text-[var(--muted)]">{protocol.start} · {protocol.end}</span></button>
+            <button type="button" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}&periodizar=1`; }} className="shrink-0 rounded-xl border border-dashed border-blue-500/40 px-4 py-3 text-sm font-semibold text-blue-500">＋ Periodizar</button>
+          </div>
+        </Card>
 
         <Card className="p-4 sm:p-5">
           <div className="flex flex-wrap items-center gap-3">
@@ -69,6 +77,7 @@ export default function StudentWorkoutsPage({ params }: Props) {
               </div>
               <p className="mt-1 text-sm text-[var(--muted)]">{protocol.workouts.length} treinos no protocolo</p>
             </div>
+            <Button variant="secondary" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}`; }}>Editar protocolo</Button>
           </div>
         </Card>
 
@@ -145,7 +154,7 @@ export default function StudentWorkoutsPage({ params }: Props) {
                     </div>
                     <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
                       <Button onClick={() => { window.location.href = `/treinos?protocolo=${protocol.id}&treinoId=${workout.id}`; }}>Iniciar sessão</Button>
-                      <Button variant="secondary" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${workout.id}`; }}>Editar prescrição</Button>
+                      <Button variant="secondary" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${workout.id}`; }}>Editar treino</Button>
                     </div>
                   </div>
                 )}
