@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -66,6 +66,13 @@ export default function AssessmentsPage() {
   const [selectedAssessmentIds, setSelectedAssessmentIds] = useState<number[]>([1, 2]);
   const [circumferenceMetric, setCircumferenceMetric] = useState("sum");
   const [skinfoldMetric, setSkinfoldMetric] = useState("sum");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (new URLSearchParams(window.location.search).get("nova") === "1") setModalOpen(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const studentAssessments = useMemo(
     () => assessments.filter((assessment) => assessment.student === selectedStudent),

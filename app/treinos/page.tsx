@@ -87,6 +87,7 @@ function defaultBlocks(method: AdvancedMethod) {
   if (method === "Drop-set") return [4, 4, 4, 4];
   if (method === "Cluster set") return [4, 4, 4];
   if (method === "Rest-pause" || method === "Myo-reps") return [10, 4, 4];
+  if (method === "Pirâmide") return [12, 10, 8, 6];
   return undefined;
 }
 
@@ -126,11 +127,6 @@ function exerciseMethodSummary(exercise: Exercise) {
 
 function sessionSeriesDetails(exercise: Exercise) {
   const configurations = seriesConfigurations(exercise);
-  const hasAdvancedMethod = configurations.some((item) => item.method !== "Convencional");
-  const hasDifferentRepetitions = new Set(configurations.map((item) => item.reps)).size > 1;
-  const hasDifferentLoads = new Set(configurations.map((item) => item.load)).size > 1;
-  if (!hasAdvancedMethod && !hasDifferentRepetitions && !hasDifferentLoads) return null;
-
   return configurations.map((configuration, index) => {
     const repetitions = configuration.blocks?.join("+") || configuration.reps;
     const method = configuration.method === "Convencional" ? "" : `${configuration.method} `;
@@ -200,6 +196,30 @@ function formatWeeklySets(value: number) {
   return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
 }
 
+function restInSeconds(rest = "60''") {
+  const minutes = Number(rest.match(/(\d+)'/)?.[1] ?? 0);
+  const seconds = Number(rest.match(/(\d+)''/)?.[1] ?? (minutes ? 0 : rest.match(/\d+/)?.[0] ?? 60));
+  return minutes * 60 + seconds;
+}
+
+function averageRepetitions(configuration: SeriesConfiguration) {
+  if (configuration.blocks?.length) return configuration.blocks.reduce((total, value) => total + value, 0);
+  const values = configuration.reps.match(/\d+/g)?.map(Number) ?? [10];
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function estimatedWorkoutDuration(exercises: Exercise[]) {
+  if (!exercises.length) return 0;
+  const executionAndRest = exercises.reduce((total, exercise) => {
+    const configurations = seriesConfigurations(exercise);
+    const execution = configurations.reduce((seconds, configuration) => seconds + averageRepetitions(configuration) * 3, 0);
+    const rests = Math.max(0, configurations.length - 1) * restInSeconds(exercise.rest);
+    return total + execution + rests;
+  }, 0);
+  const setupAndTransitions = exercises.length * 90;
+  return Math.max(1, Math.ceil((executionAndRest + setupAndTransitions) / 60));
+}
+
 function protocolDurationInWeeks(protocol: Protocol) {
   const parseDate = (value: string) => {
     const [day, month, year] = value.split("/").map(Number);
@@ -245,6 +265,7 @@ export default function WorkoutsPage() {
   const [workoutToDeleteInEditor, setWorkoutToDeleteInEditor] = useState<number | null>(null);
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: number } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<number[]>([]);
+  const [incompleteFinishOpen, setIncompleteFinishOpen] = useState(false);
 
   useEffect(() => {
     exerciseRepository.listCustom().then((customExercises) => {
@@ -253,6 +274,26 @@ export default function WorkoutsPage() {
         .map(({ name, aliases, muscles }) => ({ name, aliases, muscles }));
       setExerciseCatalog([...customCatalog, ...systemExerciseCatalog]);
     });
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const parameters = new URLSearchParams(window.location.search);
+      const student = parameters.get("iniciar");
+      const workoutName = parameters.get("treino");
+      if (!student) return;
+      const protocol = initialProtocols.find((item) => item.student === student);
+      const workout = protocol?.workouts.find((item) => !workoutName || item.name === workoutName) ?? protocol?.workouts[0];
+      if (!protocol || !workout) return;
+      const exercises = workout.exercises.map((exercise) => {
+        const configurations = seriesConfigurations(exercise);
+        return { ...exercise, originalExerciseId: exercise.id, sets: configurations.length, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
+      });
+      setCompletedExercises([]);
+      setSessionExercises(exercises);
+      setActiveSession({ protocol, workout });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const filteredProtocols = useMemo(() => {
@@ -303,6 +344,7 @@ export default function WorkoutsPage() {
     }));
     setSwappingExerciseId(null);
     setFinishChoiceOpen(false);
+    setIncompleteFinishOpen(false);
     setActiveSession({ protocol, workout });
   }
 
@@ -396,8 +438,8 @@ export default function WorkoutsPage() {
     const data = new FormData(event.currentTarget);
     const name = String(data.get("name") || "").trim();
     const focus = String(data.get("focus") || "").trim();
-    const duration = Number(data.get("duration"));
-    if (!name || !focus || duration <= 0) return;
+    const duration = estimatedWorkoutDuration(workoutToEdit.workout.exercises);
+    if (!name || !focus) return;
     setProtocols((current) => current.map((protocol) => protocol.id === workoutToEdit.protocolId
       ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === workoutToEdit.workout.id ? { ...workout, name, focus, duration } : workout) }
       : protocol));
@@ -434,7 +476,7 @@ export default function WorkoutsPage() {
   function addWorkoutFromEditor(protocol: Protocol) {
     if (!prescriptionEditor) return;
     const id = Math.max(...protocols.flatMap((item) => item.workouts.map((workout) => workout.id)), 0) + 1;
-    const workout: Workout = { id, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 50, exercises: [], volume: [] };
+    const workout: Workout = { id, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 0, exercises: [], volume: [] };
     setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises, [id]: [] }));
     setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, workout] } : item));
     setPrescriptionEditor({ protocolId: protocol.id, workoutId: id });
@@ -443,13 +485,44 @@ export default function WorkoutsPage() {
     setEditingWorkoutDetails(id);
   }
 
+  function duplicateWorkoutInEditor(protocol: Protocol, workout: Workout) {
+    if (!prescriptionEditor) return;
+    const sourceExercises = prescriptionEditor.workoutId === workout.id ? draftExercises : (workoutDrafts[workout.id] ?? workout.exercises);
+    const copy = copyWorkout({ ...workout, exercises: sourceExercises, duration: estimatedWorkoutDuration(sourceExercises) });
+    setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises, [copy.id]: copy.exercises }));
+    setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, copy] } : item));
+    setPrescriptionEditor({ protocolId: protocol.id, workoutId: copy.id });
+    setDraftExercises(copy.exercises);
+    setExpandedEditorExercise(null);
+  }
+
   function finishSession() {
+    if (!activeSession) return;
+    if (completedExercises.length < sessionExercises.length) {
+      setIncompleteFinishOpen(true);
+      return;
+    }
+    continueFinishingSession();
+  }
+
+  function continueFinishingSession() {
     if (!activeSession) return;
     if (sessionExercises.some((exercise) => exercise.changed)) {
       setFinishChoiceOpen(true);
       return;
     }
     completeSession(false);
+  }
+
+  function finishAndCompleteAll() {
+    setCompletedExercises(sessionExercises.map((exercise) => exercise.id));
+    setIncompleteFinishOpen(false);
+    continueFinishingSession();
+  }
+
+  function finishPartially() {
+    setIncompleteFinishOpen(false);
+    continueFinishingSession();
   }
 
   function completeSession(updatePrescription: boolean) {
@@ -636,7 +709,7 @@ export default function WorkoutsPage() {
     setProtocols((current) => current.map((protocol) => protocol.id === prescriptionEditor.protocolId
       ? { ...protocol, workouts: protocol.workouts.map((workout) => {
         const exercises = allDrafts[workout.id] ?? workout.exercises;
-        return { ...workout, exercises, volume: calculateWorkoutVolume(exercises, exerciseCatalog) };
+        return { ...workout, exercises, duration: estimatedWorkoutDuration(exercises), volume: calculateWorkoutVolume(exercises, exerciseCatalog) };
       }) }
       : protocol));
     setPrescriptionEditor(null);
@@ -644,7 +717,7 @@ export default function WorkoutsPage() {
 
   function addWorkoutToProtocol(protocol: Protocol) {
     const id = Math.max(...protocols.flatMap((item) => item.workouts.map((workout) => workout.id)), 0) + 1;
-    const workout: Workout = { id, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 50, exercises: [], volume: [] };
+    const workout: Workout = { id, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 0, exercises: [], volume: [] };
     setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, workout] } : item));
     setExpandedWorkouts((current) => [...current, id]);
     setPrescriptionEditor({ protocolId: protocol.id, workoutId: id });
@@ -755,7 +828,7 @@ export default function WorkoutsPage() {
                   const maximum = Math.max(...item.volume.map((volume) => volume.sets), 1);
                   const targetExecutions = item.targetExecutions ?? suggestedWorkoutExecutions(protocol, workoutIndex);
                   return <article key={item.id} className={`rounded-2xl border p-3 ${active ? "border-blue-500 bg-blue-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}>
-                    <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><div className="flex shrink-0 flex-col items-end gap-1"><Badge tone={active ? "info" : "neutral"}>{item.duration} min</Badge><span className="text-[10px] font-medium text-[var(--muted)]">Meta: {targetExecutions}×</span></div><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome, foco e meta de ${item.name}`}>✎</button><button type="button" onClick={() => setWorkoutToDeleteInEditor(item.id)} disabled={editorWorkouts.length === 1} className="grid size-7 shrink-0 place-items-center rounded-lg border border-red-500/30 bg-red-500/10 text-xs text-red-500 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Excluir ${item.name}`}>×</button></div>
+                        <div className="flex items-start gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 flex-1 text-left"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{item.focus}</span></button><div className="flex shrink-0 flex-col items-end gap-1"><Badge tone={active ? "info" : "neutral"}>{estimatedWorkoutDuration(active ? draftExercises : (workoutDrafts[item.id] ?? item.exercises))} min</Badge><span className="text-[10px] font-medium text-[var(--muted)]">Meta: {targetExecutions}×</span></div><button type="button" onClick={() => duplicateWorkoutInEditor(protocol, item)} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Duplicar ${item.name}`}>⧉</button><button type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setEditingWorkoutDetails(editingWorkoutDetails === item.id ? null : item.id); }} className="grid size-7 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs text-blue-500" aria-label={`Editar nome, foco e meta de ${item.name}`}>✎</button><button type="button" onClick={() => setWorkoutToDeleteInEditor(item.id)} disabled={editorWorkouts.length === 1} className="grid size-7 shrink-0 place-items-center rounded-lg border border-red-500/30 bg-red-500/10 text-xs text-red-500 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Excluir ${item.name}`}>×</button></div>
                     {active && editingWorkoutDetails === item.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><label className="text-[11px] text-[var(--muted)]">Nome do treino<input value={item.name} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Foco ou descrição<input value={item.focus} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "focus", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /></label><label className="text-[11px] text-[var(--muted)]">Meta de execuções no protocolo<input type="number" min="1" max="999" value={targetExecutions} onChange={(event) => updateWorkoutDetails(protocol.id, item.id, "targetExecutions", Math.max(1, Number(event.target.value)))} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--foreground)]" /><span className="mt-1 block text-[10px] leading-4">Sugestão automática baseada em {protocolDurationInWeeks(protocol)} semanas e frequência de {protocol.frequency}× por semana.</span></label><button type="button" onClick={() => setEditingWorkoutDetails(null)} className="justify-self-end rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white">Concluir</button></div>}
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {total.toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos</span></div>
                     <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => {
@@ -765,9 +838,9 @@ export default function WorkoutsPage() {
                       const methodSummary = exerciseMethodSummary(exercise);
                       return <div key={exercise.id} className={`overflow-hidden rounded-xl border ${open ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}>
                         <button type="button" onClick={() => { if (!active) selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(open ? null : exercise.id); }} className="flex w-full items-center gap-3 p-3 text-left"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {methodSummary}</span></span><span className={`transition-transform ${open ? "rotate-90" : ""}`}>›</span></button>
-                        {open && <div className="border-t border-blue-500/20 p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-[11px] font-semibold text-blue-500">Configuração individual das séries</p><p className="mt-0.5 text-[10px] leading-4 text-[var(--muted)]">{sets} {sets === 1 ? "série prescrita" : "séries prescritas"} · configure cada uma separadamente.</p></div><button type="button" onClick={() => addSeriesToExercise(exercise.id)} className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">＋ Adicionar série</button></div><label className="mt-3 block text-[11px] text-[var(--muted)]">Descanso entre séries<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label>
+                        {open && <div className="border-t border-blue-500/20 p-3"><div><p className="text-[11px] font-semibold text-blue-500">Configuração individual das séries</p><p className="mt-0.5 text-[10px] leading-4 text-[var(--muted)]">{sets} {sets === 1 ? "série prescrita" : "séries prescritas"} · configure cada uma separadamente.</p></div><label className="mt-3 block text-[11px] text-[var(--muted)]">Descanso entre séries<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label>
                           <div className="mt-3 space-y-2">{configurations.map((configuration, seriesIndex) => <div key={seriesIndex} className={`rounded-xl border p-2.5 ${configuration.method === "Convencional" ? "border-[var(--border)] bg-[var(--surface)]" : "border-violet-500/30 bg-violet-500/10"}`}><div className="flex items-center gap-2"><strong className="shrink-0 text-xs">Série {seriesIndex + 1}</strong><select aria-label={`Método da série ${seriesIndex + 1}`} value={configuration.method} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "method", event.target.value)} className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select><button type="button" aria-label={`Remover série ${seriesIndex + 1}`} onClick={() => removeSeriesFromExercise(exercise.id, seriesIndex)} disabled={configurations.length === 1} className="grid size-8 shrink-0 place-items-center rounded-lg border border-red-500/30 text-sm text-red-500 disabled:cursor-not-allowed disabled:opacity-30">×</button></div><div className="mt-2 grid grid-cols-2 gap-2"><label className="text-[10px] text-[var(--muted)]">Repetições<input aria-label={`Repetições da série ${seriesIndex + 1}`} value={configuration.reps} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "reps", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label><label className="text-[10px] text-[var(--muted)]">Carga<input aria-label={`Carga da série ${seriesIndex + 1}`} value={configuration.load} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "load", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label></div>{configuration.blocks && <div className="mt-2 rounded-lg border border-violet-500/20 bg-[var(--background)] p-2"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-semibold text-violet-500">Blocos de repetições</span><div className="flex gap-1"><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, -1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">−</button><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, 1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">＋</button></div></div><div className="mt-2 flex items-center gap-1 overflow-x-auto">{configuration.blocks.map((block, blockIndex) => <div key={blockIndex} className="flex items-center gap-1">{blockIndex > 0 && <span className="font-semibold text-violet-500">＋</span>}<select aria-label={`Bloco ${blockIndex + 1} da série ${seriesIndex + 1}`} value={block} onChange={(event) => updateSeriesBlock(exercise.id, seriesIndex, blockIndex, Number(event.target.value))} className="h-8 w-12 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-1 text-center text-xs">{Array.from({length:20},(_,value)=>value+1).map((value)=><option key={value}>{value}</option>)}</select></div>)}</div></div>}</div>)}</div>
-                          <div className="mt-3 flex justify-end gap-1"><button type="button" onClick={() => moveDraftExercise(index,-1)} disabled={index===0} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index,1)} disabled={index===draftExercises.length-1} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current)=>current.filter((entry)=>entry.id!==exercise.id))} className="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-500/10">Excluir</button></div>
+                          <button type="button" onClick={() => addSeriesToExercise(exercise.id)} className="mt-3 w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">＋ Adicionar série abaixo</button><div className="mt-3 flex justify-end gap-1"><button type="button" onClick={() => moveDraftExercise(index,-1)} disabled={index===0} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index,1)} disabled={index===draftExercises.length-1} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current)=>current.filter((entry)=>entry.id!==exercise.id))} className="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-500/10">Excluir</button></div>
                         </div>}
                       </div>;
                     })}</div>
@@ -858,11 +931,13 @@ export default function WorkoutsPage() {
           </div><footer className="sticky bottom-0 flex flex-col-reverse gap-2 rounded-b-2xl border-t border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:justify-end sm:p-6"><Button variant="ghost" onClick={() => setPrescriptionEditor(null)}>Cancelar</Button><Button onClick={savePrescription}>Salvar prescrição</Button></footer></div></div>;
       })()}
 
-      {workoutToEdit && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-workout-title"><form onSubmit={editWorkout} className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="edit-workout-title" className="text-xl font-semibold">Editar treino</h2><p className="mt-1 text-sm text-[var(--muted)]">Atualize as informações gerais deste treino.</p></div><button type="button" onClick={() => setWorkoutToEdit(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 space-y-4"><label className="block text-sm font-medium">Nome do treino<input name="name" required defaultValue={workoutToEdit.workout.name} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Foco do treino<input name="focus" required defaultValue={workoutToEdit.workout.focus} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Duração estimada (minutos)<input name="duration" required type="number" min="1" defaultValue={workoutToEdit.workout.duration} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label></div><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="ghost" onClick={() => setWorkoutToEdit(null)}>Cancelar</Button><Button type="submit">Salvar alterações</Button></div></form></div>}
+      {workoutToEdit && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-workout-title"><form onSubmit={editWorkout} className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="edit-workout-title" className="text-xl font-semibold">Editar treino</h2><p className="mt-1 text-sm text-[var(--muted)]">Atualize as informações gerais deste treino.</p></div><button type="button" onClick={() => setWorkoutToEdit(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 space-y-4"><label className="block text-sm font-medium">Nome do treino<input name="name" required defaultValue={workoutToEdit.workout.name} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Foco do treino<input name="focus" required defaultValue={workoutToEdit.workout.focus} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><p className="text-xs font-semibold text-blue-500">Duração calculada automaticamente</p><p className="mt-1 text-sm">{estimatedWorkoutDuration(workoutToEdit.workout.exercises)} minutos estimados</p><p className="mt-1 text-xs text-[var(--muted)]">Considera repetições, descanso entre séries e 90 segundos para ajustes entre exercícios.</p></div></div><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="ghost" onClick={() => setWorkoutToEdit(null)}>Cancelar</Button><Button type="submit">Salvar alterações</Button></div></form></div>}
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
       {activeSession && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title"><button type="button" className="hidden flex-1 sm:block" onClick={() => setActiveSession(null)} aria-label="Fechar sessão" /><aside className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-2xl"><div className="flex items-start justify-between border-b border-[var(--border)] p-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Sessão em andamento</p><h2 id="session-title" className="mt-1 text-xl font-semibold">{activeSession.protocol.student} · {activeSession.workout.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{activeSession.workout.focus}</p></div><button type="button" onClick={() => setActiveSession(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">{sessionExercises.map((exercise, index) => { const done = completedExercises.includes(exercise.id); const configurations = seriesConfigurations(exercise); const seriesDetails = sessionSeriesDetails(exercise); const compatibleNames = compatibleExerciseNames(exercise); return <div key={exercise.id} className={`rounded-2xl border p-4 transition ${done ? "border-emerald-500/40 bg-emerald-500/10" : exercise.changed ? "border-amber-500/40 bg-amber-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}><div className="flex items-start gap-3"><span className={`grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{done ? "✓" : index + 1}</span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="block truncate">{exercise.name}</strong>{exercise.changed && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600">Alterado</span>}</div>{seriesDetails ? <div className="mt-2 space-y-1.5">{seriesDetails.map((series) => <div key={series.label} className="flex items-center justify-between gap-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-xs"><strong className="font-semibold text-[var(--foreground)]">{series.label}</strong><span className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => adjustSessionLoad(exercise.id, -2.5, series.index)} className="grid size-7 place-items-center rounded-md border border-[var(--border)] font-bold" aria-label={`Diminuir carga da série ${series.index + 1}`}>−</button><span className="min-w-12 text-center font-semibold text-[var(--muted)]">{series.load}</span><button type="button" onClick={() => adjustSessionLoad(exercise.id, 2.5, series.index)} className="grid size-7 place-items-center rounded-md border border-[var(--border)] font-bold" aria-label={`Aumentar carga da série ${series.index + 1}`}>＋</button></span></div>)}</div> : <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-sm text-[var(--muted)]">{exercise.prescription}</span><span className="flex items-center gap-1"><button type="button" onClick={() => adjustSessionLoad(exercise.id, -2.5)} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] font-bold" aria-label={`Diminuir carga de ${exercise.name}`}>−</button><strong className="min-w-14 text-center text-sm">{exercise.load}</strong><button type="button" onClick={() => adjustSessionLoad(exercise.id, 2.5)} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] font-bold" aria-label={`Aumentar carga de ${exercise.name}`}>＋</button></span></div>}</div><button type="button" onClick={() => toggleExercise(exercise.id)} className={`shrink-0 rounded-lg px-2 py-1 text-xs font-semibold ${done ? "text-emerald-600" : "text-blue-500 hover:bg-blue-500/10"}`}>{done ? "Concluído" : "Concluir"}</button></div><div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3"><button type="button" onClick={() => changeSessionSeries(exercise.id, -1)} disabled={configurations.length === 1} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold disabled:opacity-30">− Série</button><span className="text-xs font-semibold text-[var(--muted)]">{configurations.length} {configurations.length === 1 ? "série" : "séries"}</span><button type="button" onClick={() => changeSessionSeries(exercise.id, 1)} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold">＋ Série</button><button type="button" onClick={() => setSwappingExerciseId((current) => current === exercise.id ? null : exercise.id)} className="ml-auto rounded-lg border border-blue-500/30 px-3 py-2 text-xs font-semibold text-blue-500">Trocar exercício</button></div>{swappingExerciseId === exercise.id && <div className="mt-3 grid gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 sm:grid-cols-2"><label className="text-xs font-medium text-[var(--muted)]">Exercício compatível<select value={exercise.name} onChange={(event) => updateSessionExercise(exercise.id, "name", event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-sm">{compatibleNames.map((name) => <option key={name}>{name}</option>)}</select></label><label className="text-xs font-medium text-[var(--muted)]">Carga executada<input value={exercise.load} onChange={(event) => updateSessionExercise(exercise.id, "load", event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" /></label><p className="text-[11px] leading-4 text-[var(--muted)] sm:col-span-2">São sugeridos exercícios com o mesmo grupo muscular principal. A troca e a carga ficam registradas nesta sessão.</p></div>}</div>; })}</div><div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="text-[var(--muted)]">Progresso da sessão</span><strong>{completedExercises.length}/{sessionExercises.length}</strong></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${sessionExercises.length ? completedExercises.length / sessionExercises.length * 100 : 0}%` }} /></div><Button className="w-full" disabled={completedExercises.length === 0} onClick={finishSession}>Finalizar sessão</Button></div></aside></div>}
+
+      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Finalizar a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Ainda existem {sessionExercises.length - completedExercises.length} exercícios não concluídos. Você deseja marcá-los como concluídos antes de finalizar?</p><div className="mt-6 space-y-2"><Button className="w-full" onClick={finishAndCompleteAll}>Concluir todos e finalizar</Button><Button variant="secondary" className="w-full" onClick={finishPartially}>Finalizar parcialmente</Button><Button variant="ghost" className="w-full" onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
 
       {finishChoiceOpen && activeSession && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="finish-choice-title"><Card className="max-h-[90vh] w-full max-w-md overflow-y-auto"><div className="grid size-12 place-items-center rounded-2xl bg-amber-500/10 text-xl text-amber-600">↻</div><h2 id="finish-choice-title" className="mt-4 text-xl font-semibold">Como deseja salvar as alterações?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Você alterou séries, carga ou exercício durante esta sessão. Escolha se essas mudanças valerão apenas hoje ou também para as próximas sessões.</p>{weeklyVolumeImpact.length > 0 && <div className="mt-4 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4"><p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Impacto no volume semanal estimado</p><p className="mt-1 text-xs leading-5 text-[var(--muted)]">Considerando a frequência atual de {activeSession.protocol.frequency} treinos por semana.</p><div className="mt-3 space-y-2">{weeklyVolumeImpact.map((impact) => <div key={impact.muscle} className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface)] px-3 py-2"><div><p className="text-sm font-medium">{impact.muscle}</p><p className="text-xs text-[var(--muted)]">{formatWeeklySets(impact.before)} → {formatWeeklySets(impact.after)} séries/semana</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${impact.difference < 0 ? "bg-rose-500/10 text-rose-600 dark:text-rose-300" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"}`}>{impact.difference > 0 ? "+" : ""}{formatWeeklySets(impact.difference)}</span></div>)}</div></div>}<div className="mt-6 space-y-2"><Button className="w-full" onClick={() => completeSession(false)}>Somente nesta sessão</Button><Button variant="secondary" className="w-full" onClick={() => completeSession(true)}>Atualizar próximos treinos</Button><Button variant="ghost" className="w-full" onClick={() => setFinishChoiceOpen(false)}>Voltar à sessão</Button></div></Card></div>}
     </MainLayout>

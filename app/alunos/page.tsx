@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -8,124 +8,114 @@ import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
 
+type StudentFilter = "all" | "active" | "frequency" | "inactive7" | "reevaluation";
 type Student = {
-  id: number;
-  name: string;
-  phone: string;
-  goal: string;
-  frequency: number;
-  status: "Ativo" | "Pausado" | "Inativo";
-  lastSession: string;
-  nextSession: string;
-  initials: string;
+  id: number; name: string; phone: string; email: string; cpf: string; goal: string; frequency: number;
+  status: "Ativo" | "Pausado" | "Inativo"; lastSession: string; daysWithoutTraining: number;
+  nextSession: string; initials: string; reevaluationPending: boolean;
 };
 
 const initialStudents: Student[] = [
-  { id: 1, name: "João Mendes", phone: "(21) 99911-2200", goal: "Hipertrofia", frequency: 92, status: "Ativo", lastSession: "Ontem", nextSession: "Hoje, 14:00", initials: "JM" },
-  { id: 2, name: "Mariana Costa", phone: "(21) 99832-4411", goal: "Emagrecimento", frequency: 88, status: "Ativo", lastSession: "20/07", nextSession: "Amanhã, 08:30", initials: "MC" },
-  { id: 3, name: "Carlos Lima", phone: "(21) 99745-8830", goal: "Condicionamento", frequency: 76, status: "Ativo", lastSession: "18/07", nextSession: "Sexta, 10:00", initials: "CL" },
-  { id: 4, name: "Ana Souza", phone: "(21) 99654-1192", goal: "Força", frequency: 95, status: "Ativo", lastSession: "Hoje", nextSession: "Quinta, 14:00", initials: "AS" },
-  { id: 5, name: "Paulo Rocha", phone: "(21) 99512-7001", goal: "Qualidade de vida", frequency: 64, status: "Pausado", lastSession: "10/07", nextSession: "Não agendado", initials: "PR" },
-  { id: 6, name: "Beatriz Alves", phone: "(21) 99420-3366", goal: "Hipertrofia", frequency: 84, status: "Ativo", lastSession: "21/07", nextSession: "Hoje, 18:00", initials: "BA" },
+  { id: 1, name: "João Mendes", phone: "(21) 99911-2200", email: "joao@email.com", cpf: "123.456.789-00", goal: "Hipertrofia", frequency: 92, status: "Ativo", lastSession: "Ontem", daysWithoutTraining: 1, nextSession: "Hoje, 14:00", initials: "JM", reevaluationPending: false },
+  { id: 2, name: "Mariana Costa", phone: "(21) 99832-4411", email: "mariana@email.com", cpf: "234.567.890-11", goal: "Emagrecimento", frequency: 88, status: "Ativo", lastSession: "20/07", daysWithoutTraining: 8, nextSession: "Amanhã, 08:30", initials: "MC", reevaluationPending: true },
+  { id: 3, name: "Carlos Lima", phone: "(21) 99745-8830", email: "carlos@email.com", cpf: "345.678.901-22", goal: "Condicionamento", frequency: 76, status: "Ativo", lastSession: "18/07", daysWithoutTraining: 10, nextSession: "Sexta, 10:00", initials: "CL", reevaluationPending: false },
+  { id: 4, name: "Ana Souza", phone: "(21) 99654-1192", email: "ana@email.com", cpf: "456.789.012-33", goal: "Força", frequency: 95, status: "Ativo", lastSession: "Hoje", daysWithoutTraining: 0, nextSession: "Quinta, 14:00", initials: "AS", reevaluationPending: true },
+  { id: 5, name: "Paulo Rocha", phone: "(21) 99512-7001", email: "paulo@email.com", cpf: "567.890.123-44", goal: "Qualidade de vida", frequency: 64, status: "Pausado", lastSession: "10/07", daysWithoutTraining: 18, nextSession: "Não agendado", initials: "PR", reevaluationPending: true },
+  { id: 6, name: "Beatriz Alves", phone: "(21) 99420-3366", email: "beatriz@email.com", cpf: "678.901.234-55", goal: "Hipertrofia", frequency: 84, status: "Ativo", lastSession: "21/07", daysWithoutTraining: 7, nextSession: "Hoje, 18:00", initials: "BA", reevaluationPending: false },
 ];
 
 function getInitials(name: string) {
   return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
+function whatsappUrl(phone: string) {
+  return `https://wa.me/55${phone.replace(/\D/g, "")}`;
+}
+
 export default function StudentsPage() {
   const [students, setStudents] = useState(initialStudents);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Todos");
+  const [studentFilter, setStudentFilter] = useState<StudentFilter>("all");
+  const [frequencyOrder, setFrequencyOrder] = useState("highest");
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [expandedStudents, setExpandedStudents] = useState<number[]>([]);
 
-  function toggleStudent(studentId: number) {
-    setExpandedStudents((current) =>
-      current.includes(studentId)
-        ? current.filter((id) => id !== studentId)
-        : [...current, studentId],
-    );
-  }
-
-  const filteredStudents = useMemo(() => {
-    const normalizedQuery = query.toLocaleLowerCase("pt-BR");
-    return students.filter((student) =>
-      (status === "Todos" || student.status === status) &&
-      (student.name.toLocaleLowerCase("pt-BR").includes(normalizedQuery) || student.goal.toLocaleLowerCase("pt-BR").includes(normalizedQuery)),
-    );
-  }, [query, status, students]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (new URLSearchParams(window.location.search).get("novo") === "1") setModalOpen(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const activeStudents = students.filter((student) => student.status === "Ativo");
-  const averageFrequency = Math.round(activeStudents.reduce((total, student) => total + student.frequency, 0) / activeStudents.length);
+  const inactiveSeven = students.filter((student) => student.daysWithoutTraining >= 7);
+  const reevaluationPending = students.filter((student) => student.reevaluationPending);
+  const averageFrequency = Math.round(activeStudents.reduce((total, student) => total + student.frequency, 0) / Math.max(activeStudents.length, 1));
+
+  const filteredStudents = useMemo(() => {
+    const normalized = query.toLocaleLowerCase("pt-BR");
+    let result = students.filter((student) =>
+      (status === "Todos" || student.status === status) &&
+      (student.name.toLocaleLowerCase("pt-BR").includes(normalized) || student.goal.toLocaleLowerCase("pt-BR").includes(normalized)),
+    );
+    if (studentFilter === "active") result = result.filter((student) => student.status === "Ativo");
+    if (studentFilter === "inactive7") result = result.filter((student) => student.daysWithoutTraining >= 7);
+    if (studentFilter === "reevaluation") result = result.filter((student) => student.reevaluationPending);
+    if (studentFilter === "frequency") result = [...result].sort((a, b) => frequencyOrder === "highest" ? b.frequency - a.frequency : frequencyOrder === "lowest" ? a.frequency - b.frequency : a.name.localeCompare(b.name, "pt-BR"));
+    return result;
+  }, [frequencyOrder, query, status, studentFilter, students]);
 
   function addStudent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const name = String(data.get("name") || "").trim();
     const phone = String(data.get("phone") || "").trim();
+    const email = String(data.get("email") || "").trim();
+    const cpf = String(data.get("cpf") || "").trim();
     const goal = String(data.get("goal") || "").trim();
-    if (!name || !phone || !goal) return;
-    setStudents((current) => [{ id: Date.now(), name, phone, goal, status: "Ativo", frequency: 100, lastSession: "Ainda não treinou", nextSession: "Não agendado", initials: getInitials(name) }, ...current]);
+    if (!name || !phone || !email || !cpf || !goal) return;
+    setStudents((current) => [{ id: Date.now(), name, phone, email, cpf, goal, status: "Ativo", frequency: 100, lastSession: "Ainda não treinou", daysWithoutTraining: 0, nextSession: "Não agendado", initials: getInitials(name), reevaluationPending: false }, ...current]);
     event.currentTarget.reset();
     setModalOpen(false);
+  }
+
+  function chooseFilter(filter: StudentFilter) {
+    setStudentFilter(filter);
+    setStatus("Todos");
+    document.getElementById("student-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   return (
     <MainLayout>
       <div className="space-y-7">
         <PageHeader title="Alunos" description="Gerencie sua carteira e acompanhe a rotina de cada aluno." action={<Button onClick={() => setModalOpen(true)}>＋ Novo aluno</Button>} />
-
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard title="Alunos ativos" value={activeStudents.length} detail={`${students.length} alunos cadastrados`} tone="blue" />
-          <StatCard title="Frequência média" value={`${averageFrequency}%`} detail="Últimos 30 dias" tone="green" />
-          <StatCard title="Sem treinar há 7+ dias" value={2} detail="Precisam de atenção" tone="amber" />
-          <StatCard title="Reavaliações pendentes" value={3} detail="Para os próximos 15 dias" tone="violet" />
+          <button className="text-left" onClick={() => chooseFilter("active")}><StatCard title="Alunos ativos" value={activeStudents.length} detail={`${students.length} alunos cadastrados`} tone="blue" /></button>
+          <button className="text-left" onClick={() => chooseFilter("frequency")}><StatCard title="Frequência média" value={`${averageFrequency}%`} detail="Clique para ordenar" tone="green" /></button>
+          <button className="text-left" onClick={() => chooseFilter("inactive7")}><StatCard title="Sem treinar há 7+ dias" value={inactiveSeven.length} detail="Precisam de atenção" tone="amber" /></button>
+          <button className="text-left" onClick={() => chooseFilter("reevaluation")}><StatCard title="Reavaliações pendentes" value={reevaluationPending.length} detail="Pendentes ou vencidas" tone="violet" /></button>
         </section>
 
         <Card className="p-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
             <label className="relative block w-full md:max-w-md"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]">⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nome ou objetivo" className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] pl-10 pr-4 text-sm outline-none focus:border-blue-500" /></label>
-            <div className="flex gap-2 overflow-x-auto">{["Todos", "Ativo", "Pausado", "Inativo"].map((item) => <button key={item} onClick={() => setStatus(item)} className={`whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold transition ${status === item ? "bg-blue-600 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{item}</button>)}</div>
+            <div className="flex flex-1 gap-2 overflow-x-auto">{["Todos", "Ativo", "Pausado", "Inativo"].map((item) => <button key={item} onClick={() => { setStatus(item); setStudentFilter("all"); }} className={`whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold ${status === item && studentFilter === "all" ? "bg-blue-600 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{item}</button>)}</div>
+            {studentFilter === "frequency" && <select aria-label="Ordenar frequência" value={frequencyOrder} onChange={(event) => setFrequencyOrder(event.target.value)} className="h-11 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm"><option value="highest">Maior frequência</option><option value="lowest">Menor frequência</option><option value="alphabetical">Ordem alfabética</option></select>}
           </div>
         </Card>
 
-        <section className="space-y-3">
-          {filteredStudents.map((student) => (
-            <Card key={student.id} className="p-0 transition hover:border-blue-500/40">
-              <div className="flex items-center gap-3 p-4 sm:gap-4 sm:p-5">
-                <div className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-500/10 text-sm font-semibold text-blue-500 sm:size-12">{student.initials}</div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2"><h2 className="truncate font-semibold">{student.name}</h2><span className="hidden sm:inline-flex"><Badge tone={student.status === "Ativo" ? "success" : student.status === "Pausado" ? "warning" : "neutral"}>{student.status}</Badge></span></div>
-                  <p className="mt-1 truncate text-sm text-[var(--muted)]">{student.goal}</p>
-                </div>
-                <div className="hidden text-right md:block"><p className="text-xs text-[var(--muted)]">Próximo atendimento</p><p className="mt-1 text-sm font-medium">{student.nextSession}</p></div>
-                <button onClick={() => toggleStudent(student.id)} className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] text-[var(--muted)] transition hover:text-[var(--foreground)]" aria-label={expandedStudents.includes(student.id) ? `Recolher detalhes de ${student.name}` : `Expandir detalhes de ${student.name}`} aria-expanded={expandedStudents.includes(student.id)}>
-                  <span className={`transition-transform ${expandedStudents.includes(student.id) ? "rotate-180" : ""}`}>⌄</span>
-                </button>
-              </div>
-
-              {expandedStudents.includes(student.id) && (
-                <div className="border-t border-[var(--border)] px-4 pb-4 pt-4 sm:px-5 sm:pb-5">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Último treino</p><p className="mt-1 text-sm font-medium">{student.lastSession}</p></div>
-                    <div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Próximo treino</p><p className="mt-1 text-sm font-medium">{student.nextSession}</p></div>
-                    <div className="rounded-xl bg-[var(--surface-raised)] p-3"><div className="flex items-center justify-between"><p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Frequência</p><p className="text-sm font-semibold">{student.frequency}%</p></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-blue-500" style={{ width: `${student.frequency}%` }} /></div></div>
-                  </div>
-                  <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><Button variant="secondary" onClick={() => setSelectedStudent(student)}>Ver perfil</Button><Button>Abrir treino</Button></div>
-                </div>
-              )}
-            </Card>
-          ))}
+        <section id="student-list" className="scroll-mt-24 space-y-3">
+          {studentFilter !== "all" && <div className="flex items-center justify-between"><p className="text-sm font-semibold">{studentFilter === "active" ? "Alunos ativos" : studentFilter === "frequency" ? "Frequência dos alunos" : studentFilter === "inactive7" ? "Sem treinar há 7 dias ou mais" : "Reavaliações pendentes ou vencidas"}</p><button onClick={() => setStudentFilter("all")} className="text-sm font-semibold text-blue-500">Limpar filtro</button></div>}
+          {filteredStudents.map((student) => <Card key={student.id} className="p-0 transition hover:border-blue-500/40"><div className="flex items-center gap-3 p-4 sm:gap-4 sm:p-5"><div className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-500/10 text-sm font-semibold text-blue-500">{student.initials}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate font-semibold">{student.name}</h2><span className="hidden sm:inline-flex"><Badge tone={student.status === "Ativo" ? "success" : student.status === "Pausado" ? "warning" : "neutral"}>{student.status}</Badge></span></div><p className="mt-1 truncate text-sm text-[var(--muted)]">{student.goal} · {student.frequency}% de frequência</p></div><a href={whatsappUrl(student.phone)} target="_blank" rel="noreferrer" aria-label={`Enviar mensagem para ${student.name}`} className="inline-flex shrink-0 rounded-xl border border-emerald-500/30 px-2 py-2 text-xs font-semibold text-emerald-600 sm:px-3"><span className="sm:hidden">WhatsApp</span><span className="hidden sm:inline">Enviar mensagem</span></a><button onClick={() => setExpandedStudents((current) => current.includes(student.id) ? current.filter((id) => id !== student.id) : [...current, student.id])} className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-expanded={expandedStudents.includes(student.id)}>⌄</button></div>{expandedStudents.includes(student.id) && <div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase text-[var(--muted)]">Último treino</p><p className="mt-1 text-sm font-medium">{student.lastSession}</p></div><div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase text-[var(--muted)]">Próximo treino</p><p className="mt-1 text-sm font-medium">{student.nextSession}</p></div><div className="rounded-xl bg-[var(--surface-raised)] p-3"><div className="flex justify-between"><p className="text-[11px] uppercase text-[var(--muted)]">Frequência</p><p className="text-sm font-semibold">{student.frequency}%</p></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-blue-500" style={{ width: `${student.frequency}%` }} /></div></div></div><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><a href={whatsappUrl(student.phone)} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-xl border border-emerald-500/30 px-4 text-sm font-semibold text-emerald-600">Enviar mensagem</a><Button variant="secondary" onClick={() => setSelectedStudent(student)}>Ver perfil</Button><Button onClick={() => window.location.href = "/treinos"}>Abrir treino</Button></div></div>}</Card>)}
+          {filteredStudents.length === 0 && <Card className="grid min-h-56 place-items-center text-center"><div><p className="text-lg font-semibold">Nenhum aluno encontrado</p><p className="mt-2 text-sm text-[var(--muted)]">Tente alterar a pesquisa ou os filtros.</p></div></Card>}
         </section>
-
-        {filteredStudents.length === 0 && <Card className="grid min-h-56 place-items-center text-center"><div><p className="text-lg font-semibold">Nenhum aluno encontrado</p><p className="mt-2 text-sm text-[var(--muted)]">Tente alterar a pesquisa ou os filtros.</p></div></Card>}
       </div>
 
-      {modalOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/75 p-4" role="dialog" aria-modal="true" aria-labelledby="new-student-title"><form onSubmit={addStudent} className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-center justify-between"><div><h2 id="new-student-title" className="text-xl font-semibold">Novo aluno</h2><p className="mt-1 text-sm text-[var(--muted)]">Cadastre as informações essenciais.</p></div><button type="button" onClick={() => setModalOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 space-y-4"><label className="block text-sm font-medium">Nome completo<input name="name" required placeholder="Nome do aluno" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Telefone<input name="phone" required placeholder="(21) 99999-9999" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Objetivo principal<select name="goal" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label></div><div className="mt-6 flex justify-end gap-3"><Button type="button" variant="ghost" onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit">Cadastrar aluno</Button></div></form></div>}
+      {modalOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/75 p-4" role="dialog" aria-modal="true"><form onSubmit={addStudent} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-center justify-between"><div><h2 className="text-xl font-semibold">Novo aluno</h2><p className="mt-1 text-sm text-[var(--muted)]">Dados essenciais para cadastro e futuro acesso do aluno.</p></div><button type="button" onClick={() => setModalOpen(false)} className="grid size-9 place-items-center rounded-lg">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium sm:col-span-2">Nome completo<input name="name" required placeholder="Nome do aluno" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="block text-sm font-medium">Telefone<input name="phone" required placeholder="(21) 99999-9999" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="block text-sm font-medium">CPF<input name="cpf" required placeholder="000.000.000-00" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="block text-sm font-medium sm:col-span-2">E-mail<input name="email" required type="email" placeholder="aluno@email.com" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="block text-sm font-medium sm:col-span-2">Objetivo principal<select name="goal" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label></div><div className="mt-6 flex justify-end gap-3"><Button type="button" variant="ghost" onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit">Cadastrar aluno</Button></div></form></div>}
 
-      {selectedStudent && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/70" role="dialog" aria-modal="true" aria-labelledby="student-profile-title"><button className="flex-1" onClick={() => setSelectedStudent(null)} aria-label="Fechar perfil" /><aside className="h-full w-full max-w-md overflow-y-auto border-l border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 id="student-profile-title" className="text-xl font-semibold">Perfil do aluno</h2><button onClick={() => setSelectedStudent(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-8 text-center"><div className="mx-auto grid size-20 place-items-center rounded-full bg-blue-500/10 text-xl font-semibold text-blue-500">{selectedStudent.initials}</div><h3 className="mt-4 text-xl font-semibold">{selectedStudent.name}</h3><p className="mt-1 text-sm text-[var(--muted)]">{selectedStudent.goal}</p><div className="mt-3"><Badge tone="success">{selectedStudent.status}</Badge></div></div><div className="mt-8 space-y-3"><Card><p className="text-xs text-[var(--muted)]">Telefone</p><p className="mt-1 font-medium">{selectedStudent.phone}</p></Card><Card><p className="text-xs text-[var(--muted)]">Frequência nos últimos 30 dias</p><p className="mt-1 text-2xl font-semibold">{selectedStudent.frequency}%</p></Card><Card><p className="text-xs text-[var(--muted)]">Próximo atendimento</p><p className="mt-1 font-medium">{selectedStudent.nextSession}</p></Card></div><div className="mt-6 grid grid-cols-2 gap-3"><Button variant="secondary">Editar dados</Button><Button>Abrir treino</Button></div></aside></div>}
+      {selectedStudent && <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/70"><button className="flex-1" onClick={() => setSelectedStudent(null)} aria-label="Fechar perfil" /><aside className="h-full w-full max-w-md overflow-y-auto border-l border-[var(--border)] bg-[var(--surface)] p-6"><div className="flex justify-between"><h2 className="text-xl font-semibold">Perfil do aluno</h2><button onClick={() => setSelectedStudent(null)}>×</button></div><div className="mt-8 text-center"><div className="mx-auto grid size-20 place-items-center rounded-full bg-blue-500/10 text-xl font-semibold text-blue-500">{selectedStudent.initials}</div><h3 className="mt-4 text-xl font-semibold">{selectedStudent.name}</h3><p className="text-sm text-[var(--muted)]">{selectedStudent.goal}</p></div><div className="mt-8 space-y-3"><Card><p className="text-xs text-[var(--muted)]">Telefone</p><p className="mt-1 font-medium">{selectedStudent.phone}</p></Card><Card><p className="text-xs text-[var(--muted)]">E-mail</p><p className="mt-1 font-medium">{selectedStudent.email}</p></Card><Card><p className="text-xs text-[var(--muted)]">CPF</p><p className="mt-1 font-medium">{selectedStudent.cpf}</p></Card></div></aside></div>}
     </MainLayout>
   );
 }
