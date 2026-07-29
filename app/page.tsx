@@ -27,7 +27,6 @@ const dashboardLists: Record<DashboardFilter, { title: string; students: { name:
 
 export default function Home() {
   const router = useRouter();
-  const [quickMenuOpen, setQuickMenuOpen] = useState(false);
   const [activeFilter, setActiveFilter] = useState<DashboardFilter | null>(null);
 
   return (
@@ -36,7 +35,6 @@ export default function Home() {
         <PageHeader
           title="Olá, Raphael 👋"
           description="Aqui está o resumo da sua rotina hoje."
-          action={<div className="relative"><Button onClick={() => setQuickMenuOpen((open) => !open)}>＋ Novo atendimento</Button>{quickMenuOpen && <div className="absolute right-0 top-12 z-30 w-60 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-2 shadow-2xl"><button onClick={() => router.push("/alunos?novo=1")} className="w-full rounded-xl px-3 py-3 text-left text-sm font-semibold hover:bg-[var(--surface-raised)]">＋ Novo aluno</button><button onClick={() => router.push("/avaliacoes?nova=1")} className="w-full rounded-xl px-3 py-3 text-left text-sm font-semibold hover:bg-[var(--surface-raised)]">◇ Nova avaliação física</button></div>}</div>}
         />
 
         <Card className="overflow-hidden p-0">

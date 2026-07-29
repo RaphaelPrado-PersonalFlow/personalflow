@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -235,6 +235,7 @@ function suggestedWorkoutExecutions(protocol: Protocol, workoutIndex: number) {
 }
 
 export default function WorkoutsPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const requestedProtocolId = Number(searchParams.get("protocolo"));
   const requestedWorkoutId = Number(searchParams.get("treinoId"));
@@ -612,6 +613,7 @@ export default function WorkoutsPage() {
     setFinishChoiceOpen(false);
     setSessionExercises([]);
     setActiveSession(null);
+    router.push("/");
   }
 
   function deleteWorkoutFromEditor(protocol: Protocol, workoutId: number) {
