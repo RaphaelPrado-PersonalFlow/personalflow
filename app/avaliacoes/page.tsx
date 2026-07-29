@@ -69,7 +69,10 @@ export default function AssessmentsPage() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (new URLSearchParams(window.location.search).get("nova") === "1") setModalOpen(true);
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("nova") === "1") setModalOpen(true);
+      const requestedStudent = params.get("aluno");
+      if (requestedStudent && students.includes(requestedStudent)) setSelectedStudent(requestedStudent);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
