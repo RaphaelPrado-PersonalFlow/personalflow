@@ -19,6 +19,7 @@ export default function StudentWorkoutsPage({ params }: Props) {
   const studentName = decodeURIComponent(student);
   const protocol = initialProtocols.find((item) => item.student === studentName);
   const [expandedWorkouts, setExpandedWorkouts] = useState<number[]>([]);
+  const [protocolsOpen, setProtocolsOpen] = useState(true);
 
   const macroVolume = useMemo(() => {
     if (!protocol) return [];
@@ -52,32 +53,53 @@ export default function StudentWorkoutsPage({ params }: Props) {
         <PageHeader
           title={protocol.student}
           description={`${protocol.objective} · ${protocol.frequency}× por semana · ${protocol.start} a ${protocol.end}`}
-          action={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => router.push("/treinos")}>← Todos os alunos</Button><Button onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}&periodizar=1`; }}>＋ Adicionar protocolo</Button></div>}
+          action={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => router.push("/treinos")}>← Todos os alunos</Button><Button onClick={() => { window.location.href = `/treinos?novoProtocolo=${encodeURIComponent(protocol.student)}`; }}>＋ Adicionar protocolo</Button></div>}
         />
 
-        <Card className="p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Protocolos periodizados</p>
-          <div className="mt-3 flex gap-2 overflow-x-auto">
-            <button type="button" className="shrink-0 rounded-xl border border-blue-500 bg-blue-500/10 px-4 py-3 text-left text-sm text-blue-500"><strong className="block">{protocol.name ?? "Protocolo atual"}</strong><span className="mt-1 block text-xs text-[var(--muted)]">{protocol.start} · {protocol.end}</span></button>
-            <button type="button" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}&periodizar=1`; }} className="shrink-0 rounded-xl border border-dashed border-blue-500/40 px-4 py-3 text-sm font-semibold text-blue-500">＋ Periodizar</button>
-          </div>
+        <Card className="overflow-hidden p-0">
+          <button type="button" onClick={() => setProtocolsOpen((current) => !current)} className="flex w-full items-center gap-3 p-4 text-left sm:p-5" aria-expanded={protocolsOpen}>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Protocolos do aluno</p>
+              <h2 className="mt-1 font-semibold">1 protocolo cadastrado</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">Abra para editar, excluir ou revisar suas periodizações.</p>
+            </div>
+            <span className={`grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] transition-transform ${protocolsOpen ? "rotate-180" : ""}`}>⌄</span>
+          </button>
+          {protocolsOpen && (
+            <div className="border-t border-[var(--border)] p-4 sm:p-5">
+              <div className="flex flex-col gap-3 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold">{protocol.name ?? protocol.objective}</h3>
+                    <Badge tone="success">{protocol.status}</Badge>
+                  </div>
+                  <p className="mt-1 text-sm text-[var(--muted)]">{protocol.start} a {protocol.end} · {protocol.workouts.length} treinos</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:flex">
+                  <Button variant="secondary" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}`; }}>Editar protocolo</Button>
+                  <button type="button" onClick={() => { if (window.confirm(`Excluir o protocolo ${protocol.name ?? protocol.objective}?`)) router.push("/treinos"); }} className="h-10 rounded-xl border border-red-500/30 px-4 text-sm font-semibold text-red-500 hover:bg-red-500/10">Excluir protocolo</button>
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Periodizações deste protocolo</p>
+                    <p className="mt-1 text-sm text-[var(--muted)]">Cada período pode receber nome e duração próprios na prescrição.</p>
+                  </div>
+                  <Button variant="secondary" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}&periodizar=1`; }}>＋ Periodizar</Button>
+                </div>
+                <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                  <button type="button" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}`; }} className="shrink-0 rounded-xl border border-blue-500 bg-blue-500/10 px-4 py-3 text-left text-sm text-blue-500"><strong className="block">{protocol.name ?? "Período atual"}</strong><span className="mt-1 block text-xs text-[var(--muted)]">{protocol.start} · {protocol.end}</span></button>
+                </div>
+              </div>
+            </div>
+          )}
         </Card>
 
-        <Card className="p-4 sm:p-5">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 font-bold text-blue-500">
-              {protocol.student.split(" ").slice(0, 2).map((part) => part[0]).join("")}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="font-semibold">Protocolo atual</h2>
-                <Badge tone="success">{protocol.status}</Badge>
-              </div>
-              <p className="mt-1 text-sm text-[var(--muted)]">{protocol.workouts.length} treinos no protocolo</p>
-            </div>
-            <Button variant="secondary" onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}`; }}>Editar protocolo</Button>
-          </div>
-        </Card>
+        <div className="flex justify-center">
+          <Button onClick={() => { window.location.href = `/treinos?editarProtocolo=${protocol.id}&editarTreino=${protocol.workouts[0]?.id}`; }}>Editar protocolo</Button>
+        </div>
 
         <section className="space-y-4">
           {protocol.workouts.map((workout, workoutIndex) => {
