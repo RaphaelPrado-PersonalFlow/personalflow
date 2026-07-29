@@ -407,7 +407,7 @@ function WorkoutsPageContent() {
       const configurations = seriesConfigurations(exercise);
       if (direction === -1 && configurations.length === 1) return exercise;
       const nextConfigurations = direction === 1
-        ? [...configurations, { method: "Convencional" as const, reps: "8–12", load: configurations.at(-1)?.load ?? exercise.load }]
+        ? [...configurations, { method: "Convencional" as const, reps: "10", load: configurations.at(-1)?.load ?? exercise.load }]
         : configurations.slice(0, -1);
       return { ...exercise, changed: true, sets: nextConfigurations.length, seriesConfigurations: nextConfigurations, prescription: formatSeriesPrescription(nextConfigurations) };
     }));
@@ -704,7 +704,7 @@ function WorkoutsPageContent() {
     setDraftExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
       const configurations = seriesConfigurations(exercise);
-      const newConfiguration: SeriesConfiguration = { method: "Convencional", reps: "8–12", load: configurations.at(-1)?.load ?? exercise.load };
+      const newConfiguration: SeriesConfiguration = { method: "Convencional", reps: "10", load: configurations.at(-1)?.load ?? exercise.load };
       const nextConfigurations = [...configurations, newConfiguration];
       return { ...exercise, sets: nextConfigurations.length, seriesConfigurations: nextConfigurations, seriesReps: nextConfigurations.map((item) => Number(item.reps.match(/\d+/)?.[0] ?? 0)), prescription: formatSeriesPrescription(nextConfigurations) };
     }));
