@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import MainLayout from "@/components/layout/MainLayout";
@@ -234,7 +234,7 @@ function suggestedWorkoutExecutions(protocol: Protocol, workoutIndex: number) {
   return base + (workoutIndex < totalExecutions % protocol.workouts.length ? 1 : 0);
 }
 
-export default function WorkoutsPage() {
+function WorkoutsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedProtocolId = Number(searchParams.get("protocolo"));
@@ -1027,5 +1027,13 @@ export default function WorkoutsPage() {
 
       {finishChoiceOpen && activeSession && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="finish-choice-title"><Card className="max-h-[90vh] w-full max-w-md overflow-y-auto"><div className="grid size-12 place-items-center rounded-2xl bg-amber-500/10 text-xl text-amber-600">↻</div><h2 id="finish-choice-title" className="mt-4 text-xl font-semibold">Como deseja salvar as alterações?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Você alterou séries, carga ou exercício durante esta sessão. Escolha se essas mudanças valerão apenas hoje ou também para as próximas sessões.</p>{weeklyVolumeImpact.length > 0 && <div className="mt-4 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4"><p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Impacto no volume semanal estimado</p><p className="mt-1 text-xs leading-5 text-[var(--muted)]">Considerando a frequência atual de {activeSession.protocol.frequency} treinos por semana.</p><div className="mt-3 space-y-2">{weeklyVolumeImpact.map((impact) => <div key={impact.muscle} className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface)] px-3 py-2"><div><p className="text-sm font-medium">{impact.muscle}</p><p className="text-xs text-[var(--muted)]">{formatWeeklySets(impact.before)} → {formatWeeklySets(impact.after)} séries/semana</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${impact.difference < 0 ? "bg-rose-500/10 text-rose-600 dark:text-rose-300" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"}`}>{impact.difference > 0 ? "+" : ""}{formatWeeklySets(impact.difference)}</span></div>)}</div></div>}<div className="mt-6 space-y-2"><Button className="w-full" onClick={() => completeSession(false)}>Somente nesta sessão</Button><Button variant="secondary" className="w-full" onClick={() => completeSession(true)}>Atualizar próximos treinos</Button><Button variant="ghost" className="w-full" onClick={() => setFinishChoiceOpen(false)}>Voltar à sessão</Button></div></Card></div>}
     </MainLayout>
+  );
+}
+
+export default function WorkoutsPage() {
+  return (
+    <Suspense fallback={<div className="grid min-h-screen place-items-center bg-[var(--background)] text-sm text-[var(--muted)]">Carregando treinos...</div>}>
+      <WorkoutsPageContent />
+    </Suspense>
   );
 }
