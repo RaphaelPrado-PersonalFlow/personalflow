@@ -784,6 +784,7 @@ function WorkoutsPageContent() {
 
   function savePrescription() {
     if (!prescriptionEditor) return;
+    const editedProtocol = protocols.find((protocol) => protocol.id === prescriptionEditor.protocolId);
     const allDrafts = { ...workoutDrafts, [prescriptionEditor.workoutId]: draftExercises };
     setProtocols((current) => current.map((protocol) => protocol.id === prescriptionEditor.protocolId
       ? { ...protocol, workouts: protocol.workouts.map((workout) => {
@@ -792,6 +793,9 @@ function WorkoutsPageContent() {
       }) }
       : protocol));
     setPrescriptionEditor(null);
+    if (editedProtocol) {
+      router.push(`/treinos/${encodeURIComponent(editedProtocol.student)}/protocolo/${editedProtocol.id}`);
+    }
   }
 
   function addWorkoutToProtocol(protocol: Protocol) {
