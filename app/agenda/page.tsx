@@ -13,7 +13,7 @@ type Appointment = {
   duration: number;
   student: string;
   type: "Treino" | "Avaliação" | "Reavaliação";
-  status: "Agendado" | "Em atendimento" | "Concluído";
+  status: "Agendado" | "Em atendimento" | "Concluído" | "Cancelado";
   weekdays?: number[];
   recurrenceWeeks?: number;
 };
@@ -53,6 +53,7 @@ export default function AgendaPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [recurring, setRecurring] = useState(false);
   const [selectedWeekdays, setSelectedWeekdays] = useState<number[]>([1, 3, 5]);
+  const [actionMenuId, setActionMenuId] = useState<number | null>(null);
 
   const selectedWeekday = weekDays.find((day) => day.date === selectedDate)?.index ?? 3;
 
@@ -90,6 +91,29 @@ export default function AgendaPage() {
     setRecurring(false);
     setSelectedWeekdays([1, 3, 5]);
     event.currentTarget.reset();
+  }
+
+  function cancelAppointment(id: number) {
+    setAppointments((current) => current.map((item) => item.id === id ? { ...item, status: "Cancelado" } : item));
+    setActionMenuId(null);
+  }
+
+  function rescheduleAppointment(id: number) {
+    const appointment = appointments.find((item) => item.id === id);
+    if (!appointment) return;
+    const newTime = window.prompt(`Novo horário para ${appointment.student}:`, appointment.time);
+    if (!newTime || !/^([01]\d|2[0-3]):[0-5]\d$/.test(newTime)) return;
+    setAppointments((current) => current
+      .map((item) => item.id === id ? { ...item, time: newTime, status: "Agendado" as const } : item)
+      .sort((a, b) => a.time.localeCompare(b.time)));
+    setActionMenuId(null);
+  }
+
+  function deleteAppointment(id: number) {
+    const appointment = appointments.find((item) => item.id === id);
+    if (!appointment || !window.confirm(`Excluir o atendimento de ${appointment.student}?`)) return;
+    setAppointments((current) => current.filter((item) => item.id !== id));
+    setActionMenuId(null);
   }
 
   return (
@@ -142,7 +166,17 @@ export default function AgendaPage() {
                 <div key={item.id} className="grid grid-cols-[58px_1fr] gap-3 px-4 py-4 sm:grid-cols-[74px_1fr_auto] sm:items-center sm:px-5">
                   <div><p className="font-semibold text-blue-500">{item.time}</p><p className="text-[11px] text-[var(--muted)]">{item.duration} min</p></div>
                   <div><p className="font-medium">{item.student}</p><p className="text-sm text-[var(--muted)]">{item.type}{item.weekdays ? ` · Recorrente ${item.weekdays.length}x/semana` : ""}</p></div>
-                  <div className="col-start-2 flex items-center gap-2 sm:col-auto"><Badge tone={item.status === "Concluído" ? "success" : item.status === "Em atendimento" ? "warning" : "neutral"}>{item.status}</Badge><button className="rounded-lg px-2 py-1 text-[var(--muted)] hover:bg-[var(--surface-raised)]" aria-label={`Opções de ${item.student}`}>•••</button></div>
+                  <div className="relative col-start-2 flex items-center gap-2 sm:col-auto">
+                    <Badge tone={item.status === "Concluído" ? "success" : item.status === "Em atendimento" ? "warning" : item.status === "Cancelado" ? "danger" : "neutral"}>{item.status}</Badge>
+                    <button type="button" onClick={() => setActionMenuId((current) => current === item.id ? null : item.id)} className="rounded-lg px-2 py-1 text-[var(--muted)] hover:bg-[var(--surface-raised)]" aria-label={`Opções de ${item.student}`} aria-expanded={actionMenuId === item.id}>•••</button>
+                    {actionMenuId === item.id && (
+                      <div className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xl">
+                        <button type="button" onClick={() => cancelAppointment(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Cancelar</button>
+                        <button type="button" onClick={() => rescheduleAppointment(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Reagendar</button>
+                        <button type="button" onClick={() => deleteAppointment(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10">Excluir</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

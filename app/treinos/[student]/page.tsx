@@ -18,9 +18,7 @@ export default function StudentWorkoutsPage({ params }: Props) {
   const { student } = use(params);
   const studentName = decodeURIComponent(student);
   const protocol = initialProtocols.find((item) => item.student === studentName);
-  const [expandedWorkouts, setExpandedWorkouts] = useState<number[]>(
-    protocol?.workouts[0] ? [protocol.workouts[0].id] : [],
-  );
+  const [expandedWorkouts, setExpandedWorkouts] = useState<number[]>([]);
 
   const macroVolume = useMemo(() => {
     if (!protocol) return [];
