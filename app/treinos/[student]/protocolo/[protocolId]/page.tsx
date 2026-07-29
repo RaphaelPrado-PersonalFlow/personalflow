@@ -7,6 +7,8 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
+import VolumeMetricToggle from "@/components/training/VolumeMetricToggle";
+import { formatVolumeValue, volumeByMuscle, type VolumeMetric } from "@/lib/training-volume";
 import { initialProtocols } from "../../../page";
 
 type Props = {
@@ -20,15 +22,12 @@ export default function OpenProtocolPage({ params }: Props) {
   const protocol = initialProtocols.find((item) => item.student === studentName && item.id === Number(protocolId));
   const [expandedWorkouts, setExpandedWorkouts] = useState<number[]>([]);
   const [activePeriod, setActivePeriod] = useState("current");
+  const [volumeMetric, setVolumeMetric] = useState<VolumeMetric>("series");
 
-  const macroVolume = useMemo(() => {
-    if (!protocol) return [];
-    const totals = protocol.workouts.flatMap((workout) => workout.volume).reduce<Record<string, number>>((result, item) => {
-      result[item.muscle] = (result[item.muscle] ?? 0) + item.sets;
-      return result;
-    }, {});
-    return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
-  }, [protocol]);
+  const macroVolume = useMemo(
+    () => protocol ? volumeByMuscle(protocol.workouts, volumeMetric) : [],
+    [protocol, volumeMetric],
+  );
 
   if (!protocol) {
     return (
@@ -45,7 +44,7 @@ export default function OpenProtocolPage({ params }: Props) {
   const periods = [
     { id: "current", name: protocol.name ?? "Período atual", start: protocol.start, end: protocol.end },
   ];
-  const maximumMacroVolume = Math.max(...macroVolume.map((item) => item.sets), 1);
+  const maximumMacroVolume = Math.max(...macroVolume.map((item) => item.value), 1);
 
   return (
     <MainLayout>
@@ -87,7 +86,8 @@ export default function OpenProtocolPage({ params }: Props) {
         <section className="space-y-4">
           {protocol.workouts.map((workout, workoutIndex) => {
             const expanded = expandedWorkouts.includes(workout.id);
-            const maximumVolume = Math.max(...workout.volume.map((item) => item.sets), 1);
+            const workoutVolume = volumeByMuscle([workout], volumeMetric);
+            const maximumVolume = Math.max(...workoutVolume.map((item) => item.value), 1);
             const target = workout.targetExecutions ?? Math.max(1, Math.round((protocol.frequency * 8) / protocol.workouts.length));
             const completed = workout.completedExecutions ?? workoutIndex + 2;
             const progress = Math.min((completed / target) * 100, 100);
@@ -119,10 +119,10 @@ export default function OpenProtocolPage({ params }: Props) {
                         </div>
                       </div>
                       <div>
-                        <div className="flex items-end justify-between gap-3"><div><h3 className="text-sm font-semibold">Volume do treino</h3><p className="mt-1 text-xs text-[var(--muted)]">Séries equivalentes por grupo muscular</p></div><Badge tone="info">{workout.volume.reduce((sum, item) => sum + item.sets, 0).toLocaleString("pt-BR")} séries</Badge></div>
+                        <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-sm font-semibold">Volume do treino</h3><p className="mt-1 text-xs text-[var(--muted)]">{volumeMetric === "series" ? "Séries equivalentes por grupo muscular" : "Volume de trabalho estimado por grupo muscular"}</p></div><div className="flex items-center gap-2"><VolumeMetricToggle metric={volumeMetric} onChange={setVolumeMetric} /><Badge tone="info">{formatVolumeValue(workoutVolume.reduce((sum, item) => sum + item.value, 0), volumeMetric)}</Badge></div></div>
                         <div className="mt-4 space-y-3">
-                          {workout.volume.map((item) => (
-                            <div key={item.muscle}><div className="mb-1.5 flex justify-between gap-3 text-xs"><span>{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")}</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.sets / maximumVolume * 100}%` }} /></div></div>
+                          {workoutVolume.map((item) => (
+                            <div key={item.muscle}><div className="mb-1.5 flex justify-between gap-3 text-xs"><span>{item.muscle}</span><strong>{formatVolumeValue(item.value, volumeMetric)}</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.value / maximumVolume * 100}%` }} /></div></div>
                           ))}
                         </div>
                       </div>
@@ -140,12 +140,12 @@ export default function OpenProtocolPage({ params }: Props) {
 
         <Card className="p-5">
           <div className="flex flex-wrap items-end justify-between gap-3">
-            <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Visão macro</p><h2 className="mt-1 text-lg font-semibold">Volume total do protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Soma de todos os treinos por grupo muscular</p></div>
-            <Badge tone="info">{macroVolume.reduce((sum, item) => sum + item.sets, 0).toLocaleString("pt-BR")} séries equivalentes</Badge>
+            <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Visão macro</p><h2 className="mt-1 text-lg font-semibold">Volume total do protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">{volumeMetric === "series" ? "Soma das séries equivalentes de todos os treinos" : "Soma estimada de séries × repetições × carga"}</p></div>
+            <div className="flex items-center gap-2"><VolumeMetricToggle metric={volumeMetric} onChange={setVolumeMetric} /><Badge tone="info">{formatVolumeValue(macroVolume.reduce((sum, item) => sum + item.value, 0), volumeMetric)}</Badge></div>
           </div>
           <div className="mt-5 grid gap-x-8 gap-y-4 lg:grid-cols-2">
             {macroVolume.map((item) => (
-              <div key={item.muscle}><div className="mb-1.5 flex justify-between gap-3 text-sm"><span className="font-medium">{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")} séries</strong></div><div className="h-3.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 via-blue-500 to-cyan-400" style={{ width: `${item.sets / maximumMacroVolume * 100}%` }} /></div></div>
+              <div key={item.muscle}><div className="mb-1.5 flex justify-between gap-3 text-sm"><span className="font-medium">{item.muscle}</span><strong>{formatVolumeValue(item.value, volumeMetric)}</strong></div><div className="h-3.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 via-blue-500 to-cyan-400" style={{ width: `${item.value / maximumMacroVolume * 100}%` }} /></div></div>
             ))}
           </div>
         </Card>
