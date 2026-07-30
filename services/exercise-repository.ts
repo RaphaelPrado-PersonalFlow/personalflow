@@ -8,38 +8,50 @@ export interface ExerciseRepository {
   restoreCustom(id: number): Promise<void>;
 }
 
-const STORAGE_KEY = "personalflow:custom-exercises";
+const LEGACY_STORAGE_KEY = "personalflow:custom-exercises";
+const STORAGE_KEY_PREFIX = `${LEGACY_STORAGE_KEY}:`;
 
-function readStoredExercises(): LibraryExercise[] {
+function storageKeyForUser(userId: string | null) {
+  return userId ? `${STORAGE_KEY_PREFIX}${userId}` : LEGACY_STORAGE_KEY;
+}
+
+function readStoredExercises(storageKey: string): LibraryExercise[] {
   if (typeof window === "undefined") return [];
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
+    const stored = window.localStorage.getItem(storageKey);
     return stored ? (JSON.parse(stored) as LibraryExercise[]) : [];
   } catch {
     return [];
   }
 }
 
-function writeStoredExercises(exercises: LibraryExercise[]) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(exercises));
+function writeStoredExercises(
+  storageKey: string,
+  exercises: LibraryExercise[],
+) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(storageKey, JSON.stringify(exercises));
 }
 
 class LocalExerciseRepository implements ExerciseRepository {
+  constructor(private readonly storageKey: string) {}
+
   async listCustom() {
-    return readStoredExercises();
+    return readStoredExercises(this.storageKey);
   }
 
   async saveCustom(exercise: LibraryExercise) {
-    const current = readStoredExercises();
+    const current = readStoredExercises(this.storageKey);
     const next = current.some((item) => item.id === exercise.id)
       ? current.map((item) => (item.id === exercise.id ? exercise : item))
       : [exercise, ...current];
-    writeStoredExercises(next);
+    writeStoredExercises(this.storageKey, next);
   }
 
   async archiveCustom(id: number) {
     writeStoredExercises(
-      readStoredExercises().map((item) =>
+      this.storageKey,
+      readStoredExercises(this.storageKey).map((item) =>
         item.id === id ? { ...item, active: false } : item,
       ),
     );
@@ -47,7 +59,8 @@ class LocalExerciseRepository implements ExerciseRepository {
 
   async restoreCustom(id: number) {
     writeStoredExercises(
-      readStoredExercises().map((item) =>
+      this.storageKey,
+      readStoredExercises(this.storageKey).map((item) =>
         item.id === id ? { ...item, active: true } : item,
       ),
     );
@@ -73,7 +86,22 @@ type ExerciseRow = {
 };
 
 class SupabaseExerciseRepository implements ExerciseRepository {
-  private readonly local = new LocalExerciseRepository();
+  private localFor(userId: string | null) {
+    return new LocalExerciseRepository(storageKeyForUser(userId));
+  }
+
+  private claimLegacyExercises(userId: string) {
+    const scopedKey = storageKeyForUser(userId);
+    const scoped = readStoredExercises(scopedKey);
+    if (scoped.length > 0) return scoped;
+
+    const legacy = readStoredExercises(LEGACY_STORAGE_KEY);
+    if (legacy.length > 0) {
+      writeStoredExercises(scopedKey, legacy);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    }
+    return legacy;
+  }
 
   private get client() {
     return createClient();
@@ -128,9 +156,10 @@ class SupabaseExerciseRepository implements ExerciseRepository {
   }
 
   async listCustom() {
-    const localExercises = await this.local.listCustom();
     const professionalId = await this.authenticatedUserId();
-    if (!professionalId) return localExercises;
+    if (!professionalId) return this.localFor(null).listCustom();
+
+    const localExercises = this.claimLegacyExercises(professionalId);
 
     const { data, error } = await this.client
       .from("custom_exercises")
@@ -191,13 +220,13 @@ class SupabaseExerciseRepository implements ExerciseRepository {
       active: row.active,
     }));
 
-    writeStoredExercises(exercises);
+    writeStoredExercises(storageKeyForUser(professionalId), exercises);
     return exercises;
   }
 
   async saveCustom(exercise: LibraryExercise) {
-    await this.local.saveCustom(exercise);
     const professionalId = await this.authenticatedUserId();
+    await this.localFor(professionalId).saveCustom(exercise);
     if (!professionalId) return;
 
     try {
@@ -211,8 +240,8 @@ class SupabaseExerciseRepository implements ExerciseRepository {
   }
 
   async archiveCustom(id: number) {
-    await this.local.archiveCustom(id);
     const professionalId = await this.authenticatedUserId();
+    await this.localFor(professionalId).archiveCustom(id);
     if (!professionalId) return;
 
     const { error } = await this.client
@@ -224,8 +253,8 @@ class SupabaseExerciseRepository implements ExerciseRepository {
   }
 
   async restoreCustom(id: number) {
-    await this.local.restoreCustom(id);
     const professionalId = await this.authenticatedUserId();
+    await this.localFor(professionalId).restoreCustom(id);
     if (!professionalId) return;
 
     const { error } = await this.client
