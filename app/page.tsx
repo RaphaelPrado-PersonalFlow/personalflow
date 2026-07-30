@@ -7,6 +7,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
+import { useAuth } from "@/components/auth/AuthProvider";
 import StatCard from "@/components/ui/StatCard";
 import { initialProtocols, type Protocol, type Workout } from "./treinos/page";
 
@@ -28,6 +29,8 @@ const dashboardLists: Record<DashboardFilter, { title: string; students: { name:
 
 export default function Home() {
   const router = useRouter();
+  const { profile } = useAuth();
+  const firstName = profile?.fullName.split(" ")[0] || "Personal";
   const [activeFilter, setActiveFilter] = useState<DashboardFilter | null>(null);
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const [sessionStudent, setSessionStudent] = useState<Protocol | null>(null);
@@ -50,7 +53,7 @@ export default function Home() {
     <MainLayout>
       <div className="space-y-7">
         <PageHeader
-          title="Olá, Raphael 👋"
+          title={`Olá, ${firstName} 👋`}
           description="Aqui está o resumo da sua rotina hoje."
         />
 
