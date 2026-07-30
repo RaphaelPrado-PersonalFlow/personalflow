@@ -1,40 +1,22 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
-
-type Appointment = {
-  id: number;
-  time: string;
-  duration: number;
-  student: string;
-  type: "Treino" | "Avaliação" | "Reavaliação";
-  status: "Agendado" | "Em atendimento" | "Concluído" | "Cancelado";
-  weekdays?: number[];
-  recurrenceWeeks?: number;
-};
-
-const initialAppointments: Appointment[] = [
-  { id: 1, time: "07:00", duration: 60, student: "João Mendes", type: "Treino", status: "Concluído" },
-  { id: 2, time: "08:30", duration: 60, student: "Mariana Costa", type: "Treino", status: "Concluído" },
-  { id: 3, time: "10:00", duration: 50, student: "Carlos Lima", type: "Avaliação", status: "Em atendimento" },
-  { id: 4, time: "14:00", duration: 60, student: "Ana Souza", type: "Treino", status: "Agendado" },
-  { id: 5, time: "16:30", duration: 60, student: "Paulo Rocha", type: "Reavaliação", status: "Agendado" },
-  { id: 6, time: "18:00", duration: 60, student: "Beatriz Alves", type: "Treino", status: "Agendado" },
-];
-
-const weekDays = [
-  { day: "SEG", date: 20, total: 6, index: 1 },
-  { day: "TER", date: 21, total: 6, index: 2 },
-  { day: "QUA", date: 22, total: 7, index: 3 },
-  { day: "QUI", date: 23, total: 5, index: 4 },
-  { day: "SEX", date: 24, total: 8, index: 5 },
-  { day: "SÁB", date: 25, total: 3, index: 6 },
-];
+import {
+  AppointmentRecord,
+  AppointmentStatus,
+  AppointmentType,
+  createAppointments,
+  deleteAppointment,
+  listAppointments,
+  rescheduleAppointment,
+  updateAppointmentStatus,
+} from "@/services/appointments";
+import { listStudents, StudentRecord } from "@/services/students";
 
 const recurrenceDays = [
   { label: "Seg", value: 1 },
@@ -45,76 +27,232 @@ const recurrenceDays = [
   { label: "Sáb", value: 6 },
 ];
 
+const typeLabels: Record<AppointmentType, string> = {
+  training: "Treino",
+  assessment: "Avaliação",
+  reassessment: "Reavaliação",
+};
+
+const statusLabels: Record<AppointmentStatus, string> = {
+  scheduled: "Agendado",
+  waiting: "Aguardando",
+  in_progress: "Em atendimento",
+  completed: "Concluído",
+  no_show: "Falta",
+  cancelled: "Cancelado",
+  rescheduled: "Reagendado",
+};
+
+function startOfWeek(date: Date) {
+  const result = new Date(date);
+  const day = result.getDay();
+  result.setDate(result.getDate() - (day === 0 ? 6 : day - 1));
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function addDays(date: Date, days: number) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function formatDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function combineDateAndTime(date: Date, time: string) {
+  const [hours, minutes] = time.split(":").map(Number);
+  const result = new Date(date);
+  result.setHours(hours, minutes, 0, 0);
+  return result;
+}
+
+function durationMinutes(item: AppointmentRecord) {
+  return Math.round(
+    (new Date(item.ends_at).getTime() - new Date(item.starts_at).getTime()) / 60000,
+  );
+}
+
+function statusTone(status: AppointmentStatus) {
+  if (status === "completed") return "success" as const;
+  if (status === "in_progress" || status === "waiting") return "warning" as const;
+  if (status === "cancelled" || status === "no_show") return "danger" as const;
+  return "neutral" as const;
+}
+
 export default function AgendaPage() {
   const [view, setView] = useState<"day" | "week">("day");
-  const [selectedDate, setSelectedDate] = useState(22);
-  const [filter, setFilter] = useState("Todos");
-  const [appointments, setAppointments] = useState(initialAppointments);
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [selectedDate, setSelectedDate] = useState(() => formatDateKey(new Date()));
+  const [filter, setFilter] = useState<"all" | AppointmentType>("all");
+  const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
+  const [students, setStudents] = useState<StudentRecord[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [recurring, setRecurring] = useState(false);
   const [selectedWeekdays, setSelectedWeekdays] = useState<number[]>([1, 3, 5]);
-  const [actionMenuId, setActionMenuId] = useState<number | null>(null);
+  const [actionMenuId, setActionMenuId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState("");
 
-  const selectedWeekday = weekDays.find((day) => day.date === selectedDate)?.index ?? 3;
-
-  const visibleAppointments = useMemo(
-    () => appointments.filter((item) =>
-      (filter === "Todos" || item.type === filter) &&
-      (!item.weekdays || item.weekdays.includes(selectedWeekday)),
-    ),
-    [appointments, filter, selectedWeekday],
+  const weekDays = useMemo(
+    () =>
+      recurrenceDays.map((item, index) => {
+        const date = addDays(weekStart, index);
+        return { ...item, date, key: formatDateKey(date) };
+      }),
+    [weekStart],
   );
 
-  function addAppointment(event: FormEvent<HTMLFormElement>) {
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setFeedback("");
+    try {
+      const end = addDays(weekStart, 7);
+      const [appointmentData, studentData] = await Promise.all([
+        listAppointments(weekStart.toISOString(), end.toISOString()),
+        listStudents(),
+      ]);
+      setAppointments(appointmentData);
+      setStudents(studentData.filter((student) => student.status === "active"));
+    } catch (error) {
+      setFeedback(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível carregar a agenda.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [weekStart]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadData]);
+
+  const visibleAppointments = useMemo(
+    () =>
+      appointments.filter((item) => {
+        const sameDate = formatDateKey(new Date(item.starts_at)) === selectedDate;
+        return sameDate && (filter === "all" || item.type === filter);
+      }),
+    [appointments, filter, selectedDate],
+  );
+
+  function changeWeek(offset: number) {
+    const next = addDays(weekStart, offset * 7);
+    setWeekStart(next);
+    setSelectedDate(formatDateKey(next));
+  }
+
+  function goToday() {
+    const today = new Date();
+    setWeekStart(startOfWeek(today));
+    setSelectedDate(formatDateKey(today));
+  }
+
+  async function addAppointment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const student = String(data.get("student") || "").trim();
+    const studentId = String(data.get("studentId") || "");
     const time = String(data.get("time") || "");
-    const type = String(data.get("type")) as Appointment["type"];
+    const duration = Number(data.get("duration") || 60);
+    const type = String(data.get("type")) as AppointmentType;
     const recurrenceWeeks = Number(data.get("recurrenceWeeks") || 12);
-    if (!student || !time || (recurring && selectedWeekdays.length === 0)) return;
-    const newAppointment: Appointment = {
-      id: Date.now(),
-      student,
-      time,
-      type,
-      duration: 60,
-      status: "Agendado",
-      weekdays: recurring ? selectedWeekdays : undefined,
-      recurrenceWeeks: recurring ? recurrenceWeeks : undefined,
-    };
-    setAppointments((current) => [
-      ...current,
-      newAppointment,
-    ].sort((a, b) => a.time.localeCompare(b.time)));
-    setModalOpen(false);
-    setRecurring(false);
-    setSelectedWeekdays([1, 3, 5]);
-    event.currentTarget.reset();
+    if (!studentId || !time || (recurring && selectedWeekdays.length === 0)) return;
+
+    const baseDate = new Date(`${selectedDate}T12:00:00`);
+    const recurrenceGroupId = recurring ? crypto.randomUUID() : undefined;
+    const dates: Date[] = [];
+
+    if (recurring) {
+      for (let week = 0; week < recurrenceWeeks; week += 1) {
+        for (const weekday of selectedWeekdays) {
+          const date = addDays(startOfWeek(baseDate), week * 7 + weekday - 1);
+          if (date >= baseDate || formatDateKey(date) === selectedDate) dates.push(date);
+        }
+      }
+    } else {
+      dates.push(baseDate);
+    }
+
+    setSaving(true);
+    setFeedback("");
+    try {
+      await createAppointments(
+        dates.map((date) => {
+          const startsAt = combineDateAndTime(date, time);
+          const endsAt = new Date(startsAt.getTime() + duration * 60000);
+          return {
+            student_id: studentId,
+            type,
+            starts_at: startsAt.toISOString(),
+            ends_at: endsAt.toISOString(),
+            recurrence_group_id: recurrenceGroupId,
+          };
+        }),
+      );
+      setModalOpen(false);
+      setRecurring(false);
+      setSelectedWeekdays([1, 3, 5]);
+      event.currentTarget.reset();
+      await loadData();
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "Não foi possível salvar.");
+    } finally {
+      setSaving(false);
+    }
   }
 
-  function cancelAppointment(id: number) {
-    setAppointments((current) => current.map((item) => item.id === id ? { ...item, status: "Cancelado" } : item));
+  async function cancelItem(id: string) {
+    try {
+      await updateAppointmentStatus(id, "cancelled");
+      await loadData();
+    } catch {
+      setFeedback("Não foi possível cancelar o atendimento.");
+    }
     setActionMenuId(null);
   }
 
-  function rescheduleAppointment(id: number) {
-    const appointment = appointments.find((item) => item.id === id);
-    if (!appointment) return;
-    const newTime = window.prompt(`Novo horário para ${appointment.student}:`, appointment.time);
+  async function rescheduleItem(item: AppointmentRecord) {
+    const currentTime = new Date(item.starts_at).toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const newTime = window.prompt(`Novo horário para ${item.students?.full_name ?? "o aluno"}:`, currentTime);
     if (!newTime || !/^([01]\d|2[0-3]):[0-5]\d$/.test(newTime)) return;
-    setAppointments((current) => current
-      .map((item) => item.id === id ? { ...item, time: newTime, status: "Agendado" as const } : item)
-      .sort((a, b) => a.time.localeCompare(b.time)));
+    const startsAt = combineDateAndTime(new Date(item.starts_at), newTime);
+    const endsAt = new Date(startsAt.getTime() + durationMinutes(item) * 60000);
+    try {
+      await rescheduleAppointment(item.id, startsAt.toISOString(), endsAt.toISOString());
+      await loadData();
+    } catch {
+      setFeedback("Não foi possível reagendar o atendimento.");
+    }
     setActionMenuId(null);
   }
 
-  function deleteAppointment(id: number) {
-    const appointment = appointments.find((item) => item.id === id);
-    if (!appointment || !window.confirm(`Excluir o atendimento de ${appointment.student}?`)) return;
-    setAppointments((current) => current.filter((item) => item.id !== id));
+  async function deleteItem(item: AppointmentRecord) {
+    if (!window.confirm(`Excluir o atendimento de ${item.students?.full_name ?? "este aluno"}?`)) return;
+    try {
+      await deleteAppointment(item.id);
+      await loadData();
+    } catch {
+      setFeedback("Não foi possível excluir o atendimento.");
+    }
     setActionMenuId(null);
   }
+
+  const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
+  const monthRange = `${weekDays[0].date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })} – ${weekDays[5].date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}`;
 
   return (
     <MainLayout>
@@ -125,81 +263,127 @@ export default function AgendaPage() {
           action={<Button onClick={() => setModalOpen(true)}>＋ Novo atendimento</Button>}
         />
 
+        {feedback && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600">
+            {feedback}
+          </div>
+        )}
+
         <Card className="p-3 sm:p-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex items-center gap-2">
-              <Button variant="secondary" aria-label="Semana anterior">←</Button>
-              <Button variant="secondary">Hoje</Button>
-              <Button variant="secondary" aria-label="Próxima semana">→</Button>
-              <p className="ml-2 hidden font-semibold sm:block">20–25 de julho de 2026</p>
+              <Button variant="secondary" onClick={() => changeWeek(-1)} aria-label="Semana anterior">←</Button>
+              <Button variant="secondary" onClick={goToday}>Hoje</Button>
+              <Button variant="secondary" onClick={() => changeWeek(1)} aria-label="Próxima semana">→</Button>
+              <p className="ml-2 hidden font-semibold sm:block">{monthRange}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <div className="flex rounded-xl bg-[var(--surface-raised)] p-1">
                 <button onClick={() => setView("day")} className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${view === "day" ? "bg-blue-600 text-white" : "text-[var(--muted)]"}`}>Dia</button>
                 <button onClick={() => setView("week")} className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${view === "week" ? "bg-blue-600 text-white" : "text-[var(--muted)]"}`}>Semana</button>
               </div>
-              <select value={filter} onChange={(event) => setFilter(event.target.value)} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none">
-                <option>Todos</option><option>Treino</option><option>Avaliação</option><option>Reavaliação</option>
+              <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none">
+                <option value="all">Todos</option>
+                <option value="training">Treino</option>
+                <option value="assessment">Avaliação</option>
+                <option value="reassessment">Reavaliação</option>
               </select>
             </div>
           </div>
         </Card>
 
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
-          {weekDays.map((item) => (
-            <button key={item.date} onClick={() => setSelectedDate(item.date)} className={`rounded-2xl border p-3 text-center transition ${selectedDate === item.date ? "border-blue-500 bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-raised)]"}`}>
-              <span className={`block text-[11px] font-semibold ${selectedDate === item.date ? "text-blue-100" : "text-[var(--muted)]"}`}>{item.day}</span>
-              <span className="my-1 block text-xl font-semibold">{item.date}</span>
-              <span className={`text-[11px] ${selectedDate === item.date ? "text-blue-100" : "text-[var(--muted)]"}`}>{item.total} atend.</span>
-            </button>
-          ))}
+          {weekDays.map((item) => {
+            const total = appointments.filter((appointment) => formatDateKey(new Date(appointment.starts_at)) === item.key).length;
+            return (
+              <button key={item.key} onClick={() => setSelectedDate(item.key)} className={`rounded-2xl border p-3 text-center transition ${selectedDate === item.key ? "border-blue-500 bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-raised)]"}`}>
+                <span className={`block text-[11px] font-semibold ${selectedDate === item.key ? "text-blue-100" : "text-[var(--muted)]"}`}>{item.label.toUpperCase()}</span>
+                <span className="my-1 block text-xl font-semibold">{item.date.getDate()}</span>
+                <span className={`text-[11px] ${selectedDate === item.key ? "text-blue-100" : "text-[var(--muted)]"}`}>{total} atend.</span>
+              </button>
+            );
+          })}
         </div>
 
         {view === "day" ? (
           <Card className="overflow-hidden p-0">
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
-              <div><h2 className="font-semibold">Quarta-feira, {selectedDate} de julho</h2><p className="mt-1 text-sm text-[var(--muted)]">{visibleAppointments.length} atendimentos exibidos</p></div>
-              <Badge tone="info">Próximo: 14:00</Badge>
+            <div className="border-b border-[var(--border)] px-5 py-4">
+              <h2 className="font-semibold capitalize">{selectedDateObject.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })}</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">{visibleAppointments.length} atendimentos exibidos</p>
             </div>
-            <div className="divide-y divide-[var(--border)]">
-              {visibleAppointments.map((item) => (
-                <div key={item.id} className="grid grid-cols-[58px_1fr] gap-3 px-4 py-4 sm:grid-cols-[74px_1fr_auto] sm:items-center sm:px-5">
-                  <div><p className="font-semibold text-blue-500">{item.time}</p><p className="text-[11px] text-[var(--muted)]">{item.duration} min</p></div>
-                  <div><p className="font-medium">{item.student}</p><p className="text-sm text-[var(--muted)]">{item.type}{item.weekdays ? ` · Recorrente ${item.weekdays.length}x/semana` : ""}</p></div>
-                  <div className="relative col-start-2 flex items-center gap-2 sm:col-auto">
-                    <Badge tone={item.status === "Concluído" ? "success" : item.status === "Em atendimento" ? "warning" : item.status === "Cancelado" ? "danger" : "neutral"}>{item.status}</Badge>
-                    <button type="button" onClick={() => setActionMenuId((current) => current === item.id ? null : item.id)} className="rounded-lg px-2 py-1 text-[var(--muted)] hover:bg-[var(--surface-raised)]" aria-label={`Opções de ${item.student}`} aria-expanded={actionMenuId === item.id}>•••</button>
-                    {actionMenuId === item.id && (
-                      <div className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xl">
-                        <button type="button" onClick={() => cancelAppointment(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Cancelar</button>
-                        <button type="button" onClick={() => rescheduleAppointment(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Reagendar</button>
-                        <button type="button" onClick={() => deleteAppointment(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10">Excluir</button>
-                      </div>
-                    )}
+            {loading ? (
+              <p className="px-5 py-8 text-sm text-[var(--muted)]">Carregando agenda...</p>
+            ) : visibleAppointments.length === 0 ? (
+              <p className="px-5 py-8 text-sm text-[var(--muted)]">Nenhum atendimento neste dia.</p>
+            ) : (
+              <div className="divide-y divide-[var(--border)]">
+                {visibleAppointments.map((item) => (
+                  <div key={item.id} className="grid grid-cols-[58px_1fr] gap-3 px-4 py-4 sm:grid-cols-[74px_1fr_auto] sm:items-center sm:px-5">
+                    <div>
+                      <p className="font-semibold text-blue-500">{new Date(item.starts_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
+                      <p className="text-[11px] text-[var(--muted)]">{durationMinutes(item)} min</p>
+                    </div>
+                    <div>
+                      <p className="font-medium">{item.students?.full_name ?? "Aluno"}</p>
+                      <p className="text-sm text-[var(--muted)]">{typeLabels[item.type]}{item.recurrence_group_id ? " · Recorrente" : ""}</p>
+                    </div>
+                    <div className="relative col-start-2 flex items-center gap-2 sm:col-auto">
+                      <Badge tone={statusTone(item.status)}>{statusLabels[item.status]}</Badge>
+                      <button type="button" onClick={() => setActionMenuId((current) => current === item.id ? null : item.id)} className="rounded-lg px-2 py-1 text-[var(--muted)] hover:bg-[var(--surface-raised)]" aria-label={`Opções de ${item.students?.full_name ?? "aluno"}`}>•••</button>
+                      {actionMenuId === item.id && (
+                        <div className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xl">
+                          <button type="button" onClick={() => void cancelItem(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Cancelar</button>
+                          <button type="button" onClick={() => void rescheduleItem(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Reagendar</button>
+                          <button type="button" onClick={() => void deleteItem(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10">Excluir</button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </Card>
         ) : (
           <Card className="overflow-x-auto">
             <div className="grid min-w-[680px] grid-cols-6 gap-3">
-              {weekDays.map((day) => <div key={day.date} className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-xs font-semibold text-[var(--muted)]">{day.day} {day.date}</p>{appointments.filter((item) => !item.weekdays || item.weekdays.includes(day.index)).slice(0, Math.min(appointments.length, day.total - 2)).map((item) => <div key={`${day.date}-${item.id}`} className="mt-3 rounded-lg border-l-2 border-blue-500 bg-[var(--surface)] p-2"><p className="text-xs font-semibold">{item.time}</p><p className="mt-1 truncate text-xs text-[var(--muted)]">{item.student}</p>{item.weekdays && <p className="mt-1 text-[10px] text-blue-500">↻ Semanal</p>}</div>)}</div>)}
+              {weekDays.map((day) => (
+                <div key={day.key} className="rounded-xl bg-[var(--surface-raised)] p-3">
+                  <p className="text-xs font-semibold text-[var(--muted)]">{day.label.toUpperCase()} {day.date.getDate()}</p>
+                  {appointments.filter((item) => formatDateKey(new Date(item.starts_at)) === day.key).map((item) => (
+                    <button key={item.id} onClick={() => { setSelectedDate(day.key); setView("day"); }} className="mt-3 block w-full rounded-lg border-l-2 border-blue-500 bg-[var(--surface)] p-2 text-left">
+                      <p className="text-xs font-semibold">{new Date(item.starts_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
+                      <p className="mt-1 truncate text-xs text-[var(--muted)]">{item.students?.full_name}</p>
+                    </button>
+                  ))}
+                </div>
+              ))}
             </div>
           </Card>
         )}
       </div>
 
       {modalOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/75 p-4" role="dialog" aria-modal="true" aria-labelledby="new-appointment-title">
-          <form onSubmit={addAppointment} className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl">
-            <div className="flex items-center justify-between"><div><h2 id="new-appointment-title" className="text-xl font-semibold">Novo atendimento</h2><p className="mt-1 text-sm text-[var(--muted)]">Adicione um compromisso à agenda.</p></div><button type="button" onClick={() => setModalOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/75 p-4" role="dialog" aria-modal="true">
+          <form onSubmit={addAppointment} className="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div><h2 className="text-xl font-semibold">Novo atendimento</h2><p className="mt-1 text-sm text-[var(--muted)]">Agende para {selectedDateObject.toLocaleDateString("pt-BR")}.</p></div>
+              <button type="button" onClick={() => setModalOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button>
+            </div>
             <div className="mt-6 space-y-4">
-              <label className="block text-sm font-medium">Aluno<input name="student" required placeholder="Nome do aluno" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label>
-              <div className="grid grid-cols-2 gap-3"><label className="block text-sm font-medium">Horário<input name="time" required type="time" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label><label className="block text-sm font-medium">Tipo<select name="type" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500"><option>Treino</option><option>Avaliação</option><option>Reavaliação</option></select></label></div>
+              <label className="block text-sm font-medium">Aluno
+                <select name="studentId" required defaultValue="" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500">
+                  <option value="" disabled>Selecione o aluno</option>
+                  {students.map((student) => <option key={student.id} value={student.id}>{student.full_name}</option>)}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-sm font-medium">Horário<input name="time" required type="time" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 outline-none focus:border-blue-500" /></label>
+                <label className="block text-sm font-medium">Duração<select name="duration" defaultValue="60" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option><option value="90">90 min</option></select></label>
+              </div>
+              <label className="block text-sm font-medium">Tipo<select name="type" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option value="training">Treino</option><option value="assessment">Avaliação</option><option value="reassessment">Reavaliação</option></select></label>
               <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-4">
                 <label className="flex cursor-pointer items-center justify-between gap-4">
-                  <span><span className="block text-sm font-medium">Repetir semanalmente</span><span className="mt-1 block text-xs text-[var(--muted)]">Cria o horário nas próximas semanas.</span></span>
+                  <span><span className="block text-sm font-medium">Repetir semanalmente</span><span className="mt-1 block text-xs text-[var(--muted)]">Cria todas as ocorrências no calendário.</span></span>
                   <input type="checkbox" checked={recurring} onChange={(event) => setRecurring(event.target.checked)} className="size-5 accent-blue-600" />
                 </label>
                 {recurring && (
@@ -208,16 +392,15 @@ export default function AgendaPage() {
                     <div className="mt-3 grid grid-cols-6 gap-2">
                       {recurrenceDays.map((day) => {
                         const selected = selectedWeekdays.includes(day.value);
-                        return <button key={day.value} type="button" onClick={() => setSelectedWeekdays((current) => selected ? current.filter((value) => value !== day.value) : [...current, day.value].sort())} className={`rounded-lg py-2 text-xs font-semibold transition ${selected ? "bg-blue-600 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{day.label}</button>;
+                        return <button key={day.value} type="button" onClick={() => setSelectedWeekdays((current) => selected ? current.filter((value) => value !== day.value) : [...current, day.value].sort())} className={`rounded-lg py-2 text-xs font-semibold ${selected ? "bg-blue-600 text-white" : "bg-[var(--surface-raised)] text-[var(--muted)]"}`}>{day.label}</button>;
                       })}
                     </div>
-                    <label className="mt-4 block text-sm font-medium">Repetir por<select name="recurrenceWeeks" defaultValue="12" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 outline-none focus:border-blue-500"><option value="4">4 semanas</option><option value="8">8 semanas</option><option value="12">12 semanas</option><option value="24">24 semanas</option><option value="52">1 ano</option></select></label>
-                    {selectedWeekdays.length === 0 && <p className="mt-2 text-xs text-red-500">Selecione pelo menos um dia.</p>}
+                    <label className="mt-4 block text-sm font-medium">Repetir por<select name="recurrenceWeeks" defaultValue="12" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3"><option value="4">4 semanas</option><option value="8">8 semanas</option><option value="12">12 semanas</option><option value="24">24 semanas</option><option value="52">1 ano</option></select></label>
                   </div>
                 )}
               </div>
             </div>
-            <div className="mt-6 flex justify-end gap-3"><Button type="button" variant="ghost" onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit">Salvar atendimento</Button></div>
+            <div className="mt-6 flex justify-end gap-3"><Button type="button" variant="ghost" onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving}>{saving ? "Salvando..." : "Salvar atendimento"}</Button></div>
           </form>
         </div>
       )}
