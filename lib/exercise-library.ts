@@ -32,6 +32,7 @@ export const muscleGroups = [
   "Tríceps",
   "Bíceps",
   "Abdômen",
+  "Adutores",
 ];
 
 export const equipments = ["Barra", "Halteres", "Cabo", "Máquina", "Peso corporal", "Elástico", "Outro"];
@@ -47,6 +48,86 @@ export const movements = [
   "Extensão de joelho",
   "Isolado",
   "Estabilização",
+];
+
+const systemExercise = (
+  id: number,
+  name: string,
+  aliases: string,
+  equipment: string,
+  movement: string,
+  type: string,
+  laterality: string,
+  level: string,
+  primary: string,
+  secondary: string[] = [],
+): LibraryExercise => ({
+  id, name, aliases, equipment, movement, type, laterality, level,
+  origin: "Sistema",
+  active: true,
+  muscles: [
+    { muscle: primary, factor: 1, role: "Principal" },
+    ...secondary.map((muscle) => ({ muscle, factor: 0.5, role: "Secundário" as const })),
+  ],
+  instructions: "Executar com amplitude confortável, controle do movimento e alinhamento articular.",
+});
+
+const additionalSystemExercises: LibraryExercise[] = [
+  systemExercise(26, "Agachamento búlgaro", "Afundo búlgaro, passada búlgara", "Halteres", "Agachar", "Composto", "Unilateral", "Intermediário", "Quadríceps", ["Glúteos"]),
+  systemExercise(27, "Glúteo coice na polia", "Coice no cabo, extensão de quadril na polia", "Cabo", "Dominância de quadril", "Isolado", "Unilateral", "Iniciante", "Glúteos", ["Isquiotibiais"]),
+  systemExercise(28, "Cadeira abdutora articulada", "Abdutora articulada, máquina abdutora articulada", "Máquina", "Isolado", "Isolado", "Bilateral", "Iniciante", "Glúteos"),
+  systemExercise(29, "Glúteo coice com caneleira", "Coice com caneleira, extensão de quadril com caneleira", "Outro", "Dominância de quadril", "Isolado", "Unilateral", "Iniciante", "Glúteos", ["Isquiotibiais"]),
+  systemExercise(30, "Abdução de quadril na polia", "Abdução na polia, abdução de quadril no cabo", "Cabo", "Isolado", "Isolado", "Unilateral", "Iniciante", "Glúteos"),
+  systemExercise(31, "Agachamento no Smith", "Agachamento guiado", "Máquina", "Agachar", "Composto", "Bilateral", "Iniciante", "Quadríceps", ["Glúteos"]),
+  systemExercise(32, "Agachamento frontal", "Front squat", "Barra", "Agachar", "Composto", "Bilateral", "Avançado", "Quadríceps", ["Glúteos"]),
+  systemExercise(33, "Agachamento hack", "Hack squat", "Máquina", "Agachar", "Composto", "Bilateral", "Intermediário", "Quadríceps", ["Glúteos"]),
+  systemExercise(34, "Leg press horizontal", "Leg press sentado", "Máquina", "Agachar", "Composto", "Bilateral", "Iniciante", "Quadríceps", ["Glúteos"]),
+  systemExercise(35, "Leg press unilateral", "Leg press uma perna", "Máquina", "Agachar", "Composto", "Unilateral", "Intermediário", "Quadríceps", ["Glúteos"]),
+  systemExercise(36, "Passada andando", "Avanço andando, walking lunge", "Halteres", "Agachar", "Composto", "Unilateral", "Intermediário", "Quadríceps", ["Glúteos"]),
+  systemExercise(37, "Afundo reverso", "Passada para trás", "Halteres", "Agachar", "Composto", "Unilateral", "Intermediário", "Quadríceps", ["Glúteos"]),
+  systemExercise(38, "Step-up no banco", "Subida no banco", "Halteres", "Agachar", "Composto", "Unilateral", "Intermediário", "Glúteos", ["Quadríceps"]),
+  systemExercise(39, "Cadeira extensora unilateral", "Extensora unilateral", "Máquina", "Extensão de joelho", "Isolado", "Unilateral", "Iniciante", "Quadríceps"),
+  systemExercise(40, "Mesa flexora unilateral", "Flexora deitada unilateral", "Máquina", "Flexão de joelho", "Isolado", "Unilateral", "Iniciante", "Isquiotibiais"),
+  systemExercise(41, "Cadeira flexora unilateral", "Flexora sentada unilateral", "Máquina", "Flexão de joelho", "Isolado", "Unilateral", "Iniciante", "Isquiotibiais"),
+  systemExercise(42, "Stiff com halteres", "Terra romeno com halteres", "Halteres", "Dominância de quadril", "Composto", "Bilateral", "Intermediário", "Isquiotibiais", ["Glúteos"]),
+  systemExercise(43, "Terra romeno unilateral", "Stiff unilateral", "Halteres", "Dominância de quadril", "Composto", "Unilateral", "Avançado", "Isquiotibiais", ["Glúteos"]),
+  systemExercise(44, "Good morning", "Bom dia com barra", "Barra", "Dominância de quadril", "Composto", "Bilateral", "Avançado", "Isquiotibiais", ["Glúteos"]),
+  systemExercise(45, "Glúteo na máquina", "Extensão de quadril na máquina", "Máquina", "Dominância de quadril", "Isolado", "Unilateral", "Iniciante", "Glúteos"),
+  systemExercise(46, "Extensão de quadril no banco 45°", "Hiperextensão 45 graus", "Peso corporal", "Dominância de quadril", "Composto", "Bilateral", "Intermediário", "Glúteos", ["Isquiotibiais"]),
+  systemExercise(47, "Cadeira adutora", "Máquina adutora", "Máquina", "Isolado", "Isolado", "Bilateral", "Iniciante", "Adutores"),
+  systemExercise(48, "Abdução de quadril com elástico", "Abdução com miniband", "Elástico", "Isolado", "Isolado", "Bilateral", "Iniciante", "Glúteos"),
+  systemExercise(49, "Panturrilha sentada", "Gêmeos sentado", "Máquina", "Isolado", "Isolado", "Bilateral", "Iniciante", "Panturrilhas"),
+  systemExercise(50, "Panturrilha no leg press", "Gêmeos no leg press", "Máquina", "Isolado", "Isolado", "Bilateral", "Iniciante", "Panturrilhas"),
+  systemExercise(51, "Panturrilha unilateral em pé", "Gêmeos unilateral", "Peso corporal", "Isolado", "Isolado", "Unilateral", "Iniciante", "Panturrilhas"),
+  systemExercise(52, "Supino inclinado com barra", "Supino inclinado barra", "Barra", "Empurrar horizontal", "Composto", "Bilateral", "Intermediário", "Peitoral", ["Tríceps", "Deltoide anterior"]),
+  systemExercise(53, "Supino declinado com barra", "Supino declinado", "Barra", "Empurrar horizontal", "Composto", "Bilateral", "Intermediário", "Peitoral", ["Tríceps"]),
+  systemExercise(54, "Supino reto com halteres", "Supino plano halteres", "Halteres", "Empurrar horizontal", "Composto", "Bilateral", "Intermediário", "Peitoral", ["Tríceps", "Deltoide anterior"]),
+  systemExercise(55, "Supino convergente", "Chest press convergente", "Máquina", "Empurrar horizontal", "Composto", "Bilateral", "Iniciante", "Peitoral", ["Tríceps", "Deltoide anterior"]),
+  systemExercise(56, "Crucifixo na máquina", "Peck deck, voador", "Máquina", "Empurrar horizontal", "Isolado", "Bilateral", "Iniciante", "Peitoral"),
+  systemExercise(57, "Crossover alto", "Crossover de cima para baixo", "Cabo", "Empurrar horizontal", "Isolado", "Bilateral", "Intermediário", "Peitoral"),
+  systemExercise(58, "Crossover baixo", "Crossover de baixo para cima", "Cabo", "Empurrar horizontal", "Isolado", "Bilateral", "Intermediário", "Peitoral"),
+  systemExercise(59, "Flexão de braços", "Apoio de frente, push-up", "Peso corporal", "Empurrar horizontal", "Composto", "Bilateral", "Iniciante", "Peitoral", ["Tríceps", "Deltoide anterior"]),
+  systemExercise(60, "Pullover com halter", "Pulôver", "Halteres", "Puxar vertical", "Composto", "Bilateral", "Intermediário", "Costas", ["Peitoral"]),
+  systemExercise(61, "Puxada aberta pela frente", "Pulley aberto frente", "Cabo", "Puxar vertical", "Composto", "Bilateral", "Iniciante", "Costas", ["Bíceps"]),
+  systemExercise(62, "Puxada neutra", "Pulley neutro", "Cabo", "Puxar vertical", "Composto", "Bilateral", "Iniciante", "Costas", ["Bíceps"]),
+  systemExercise(63, "Puxada supinada", "Pulley supinado", "Cabo", "Puxar vertical", "Composto", "Bilateral", "Intermediário", "Costas", ["Bíceps"]),
+  systemExercise(64, "Barra fixa pronada", "Pull-up", "Peso corporal", "Puxar vertical", "Composto", "Bilateral", "Avançado", "Costas", ["Bíceps"]),
+  systemExercise(65, "Barra fixa supinada", "Chin-up", "Peso corporal", "Puxar vertical", "Composto", "Bilateral", "Avançado", "Costas", ["Bíceps"]),
+  systemExercise(66, "Remada curvada com barra", "Remada inclinada barra", "Barra", "Puxar horizontal", "Composto", "Bilateral", "Avançado", "Costas", ["Bíceps", "Deltoide posterior"]),
+  systemExercise(67, "Remada cavalinho", "Remada T, T-bar row", "Barra", "Puxar horizontal", "Composto", "Bilateral", "Intermediário", "Costas", ["Bíceps", "Deltoide posterior"]),
+  systemExercise(68, "Remada unilateral com halter", "Serrote", "Halteres", "Puxar horizontal", "Composto", "Unilateral", "Intermediário", "Costas", ["Bíceps"]),
+  systemExercise(69, "Remada alta na polia", "High row no cabo", "Cabo", "Puxar horizontal", "Composto", "Bilateral", "Intermediário", "Costas", ["Deltoide posterior", "Bíceps"]),
+  systemExercise(70, "Pulldown com braços estendidos", "Pulldown reto", "Cabo", "Puxar vertical", "Isolado", "Bilateral", "Intermediário", "Costas"),
+  systemExercise(71, "Desenvolvimento com barra", "Desenvolvimento militar", "Barra", "Empurrar vertical", "Composto", "Bilateral", "Intermediário", "Deltoide anterior", ["Tríceps", "Deltoide lateral"]),
+  systemExercise(72, "Desenvolvimento na máquina", "Shoulder press", "Máquina", "Empurrar vertical", "Composto", "Bilateral", "Iniciante", "Deltoide anterior", ["Tríceps", "Deltoide lateral"]),
+  systemExercise(73, "Desenvolvimento Arnold", "Arnold press", "Halteres", "Empurrar vertical", "Composto", "Bilateral", "Intermediário", "Deltoide anterior", ["Deltoide lateral", "Tríceps"]),
+  systemExercise(74, "Elevação lateral na polia", "Elevação lateral no cabo", "Cabo", "Isolado", "Isolado", "Unilateral", "Intermediário", "Deltoide lateral"),
+  systemExercise(75, "Elevação frontal com halteres", "Elevação frontal", "Halteres", "Isolado", "Isolado", "Bilateral", "Iniciante", "Deltoide anterior"),
+  systemExercise(76, "Face pull", "Remada facial", "Cabo", "Puxar horizontal", "Composto", "Bilateral", "Intermediário", "Deltoide posterior", ["Costas"]),
+  systemExercise(77, "Rosca martelo", "Hammer curl", "Halteres", "Isolado", "Isolado", "Bilateral", "Iniciante", "Bíceps"),
+  systemExercise(78, "Rosca Scott", "Rosca no banco Scott", "Barra", "Isolado", "Isolado", "Bilateral", "Intermediário", "Bíceps"),
+  systemExercise(79, "Tríceps testa", "Rosca testa, skull crusher", "Barra", "Isolado", "Isolado", "Bilateral", "Intermediário", "Tríceps"),
+  systemExercise(80, "Abdominal na polia", "Crunch no cabo", "Cabo", "Isolado", "Isolado", "Bilateral", "Iniciante", "Abdômen"),
 ];
 
 export const exerciseLibrary: LibraryExercise[] = [
@@ -447,6 +528,7 @@ export const exerciseLibrary: LibraryExercise[] = [
     muscles: [{ muscle: "Abdômen", factor: 1, role: "Principal" }],
     instructions: "Manter pelve, tronco e cabeça alinhados durante toda a sustentação.",
   },
+  ...additionalSystemExercises,
 ];
 
 export const prescriptionExerciseCatalog = exerciseLibrary
