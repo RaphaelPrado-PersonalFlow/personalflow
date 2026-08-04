@@ -107,7 +107,8 @@ export default function StudentsPage() {
 
   async function addStudent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const name = String(data.get("name") || "").trim();
     const phone = String(data.get("phone") || "").trim();
     const email = String(data.get("email") || "").trim();
@@ -119,7 +120,7 @@ export default function StudentsPage() {
     try {
       const created = await createStudent({ full_name: name, phone, email, cpf, goal });
       setStudents((current) => [fromRecord(created), ...current]);
-      event.currentTarget.reset();
+      form.reset();
       setModalOpen(false);
       setFeedback("Aluno cadastrado com segurança.");
     } catch {

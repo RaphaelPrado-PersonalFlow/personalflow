@@ -317,7 +317,7 @@ export default function AgendaPage() {
               <p className="px-5 py-8 text-sm text-[var(--muted)]">Nenhum atendimento neste dia.</p>
             ) : (
               <div className="divide-y divide-[var(--border)]">
-                {visibleAppointments.map((item) => (
+                {visibleAppointments.map((item, index) => (
                   <div key={item.id} className="grid grid-cols-[58px_1fr] gap-3 px-4 py-4 sm:grid-cols-[74px_1fr_auto] sm:items-center sm:px-5">
                     <div>
                       <p className="font-semibold text-blue-500">{new Date(item.starts_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
@@ -331,7 +331,11 @@ export default function AgendaPage() {
                       <Badge tone={statusTone(item.status)}>{statusLabels[item.status]}</Badge>
                       <button type="button" onClick={() => setActionMenuId((current) => current === item.id ? null : item.id)} className="rounded-lg px-2 py-1 text-[var(--muted)] hover:bg-[var(--surface-raised)]" aria-label={`Opções de ${item.students?.full_name ?? "aluno"}`}>•••</button>
                       {actionMenuId === item.id && (
-                        <div className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xl">
+                        <div
+                          className={`absolute right-0 z-30 w-44 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xl ${
+                            index >= visibleAppointments.length - 2 ? "bottom-9" : "top-9"
+                          }`}
+                        >
                           <button type="button" onClick={() => void cancelItem(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Cancelar</button>
                           <button type="button" onClick={() => void rescheduleItem(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Reagendar</button>
                           <button type="button" onClick={() => void deleteItem(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10">Excluir</button>
