@@ -5,15 +5,15 @@ import Button from "@/components/ui/Button";
 
 type AdvancedMethod = "Convencional" | "Drop-set" | "Rest-pause" | "Cluster set" | "Pirâmide" | "Myo-reps" | "Bi-set";
 type Series = { method: AdvancedMethod; reps: string; load: string; blocks?: number[] };
-type Exercise = { id: number; name: string; prescription: string; load: string; changed?: boolean; seriesConfigurations?: Series[] };
+type Exercise = { id: string; name: string; prescription: string; load: string; changed?: boolean; seriesConfigurations?: Series[] };
 type Props = {
-  student: string; workoutName: string; focus: string; exercises: Exercise[]; completedIds: number[];
-  swappingExerciseId: number | null; compatibleNames: (exercise: Exercise) => string[];
-  onClose: () => void; onToggleComplete: (id: number) => void;
-  onAdjustLoad: (id: number, delta: -2.5 | 2.5, seriesIndex?: number) => void;
-  onAdjustRepetitions: (id: number, delta: -1 | 1, seriesIndex: number) => void;
-  onChangeSeries: (id: number, direction: -1 | 1) => void; onToggleSwap: (id: number) => void;
-  onUpdateExercise: (id: number, field: "name" | "load", value: string) => void; onFinish: () => void;
+  student: string; workoutName: string; focus: string; exercises: Exercise[]; completedIds: string[];
+  swappingExerciseId: string | null; compatibleNames: (exercise: Exercise) => string[];
+  onClose: () => void; onToggleComplete: (id: string) => void;
+  onAdjustLoad: (id: string, delta: -2.5 | 2.5, seriesIndex?: number) => void;
+  onAdjustRepetitions: (id: string, delta: -1 | 1, seriesIndex: number) => void;
+  onChangeSeries: (id: string, direction: -1 | 1) => void; onToggleSwap: (id: string) => void;
+  onUpdateExercise: (id: string, field: "name" | "load", value: string) => void; onFinish: () => void;
 };
 
 function configurations(exercise: Exercise): Series[] {
@@ -26,8 +26,8 @@ function label(series: Series, index: number) {
 }
 
 export default function SessionPanel(props: Props) {
-  const [expanded, setExpanded] = useState<number[]>([]);
-  const toggle = (id: number) => setExpanded((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const toggle = (id: string) => setExpanded((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title">
     <button type="button" className="hidden flex-1 sm:block" onClick={props.onClose} aria-label="Fechar sessão" />

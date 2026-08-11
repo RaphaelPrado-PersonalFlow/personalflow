@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
@@ -9,7 +9,8 @@ import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import StatCard from "@/components/ui/StatCard";
-import { initialProtocols, type Protocol, type Workout } from "./treinos/page";
+import { listTrainingProtocols } from "@/services/training";
+import type { Protocol, Workout } from "@/types/training";
 
 type DashboardFilter = "appointments" | "active" | "assessments" | "expired";
 
@@ -34,9 +35,14 @@ export default function Home() {
   const [activeFilter, setActiveFilter] = useState<DashboardFilter | null>(null);
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const [sessionStudent, setSessionStudent] = useState<Protocol | null>(null);
+  const [trainingProtocols, setTrainingProtocols] = useState<Protocol[]>([]);
+
+  useEffect(() => {
+    listTrainingProtocols().then(setTrainingProtocols).catch(() => setTrainingProtocols([]));
+  }, []);
 
   const openWorkoutPicker = (studentName?: string) => {
-    setSessionStudent(studentName ? initialProtocols.find((protocol) => protocol.student === studentName) ?? null : null);
+    setSessionStudent(studentName ? trainingProtocols.find((protocol) => protocol.student === studentName) ?? null : null);
     setSessionPickerOpen(true);
   };
 
@@ -96,7 +102,7 @@ export default function Home() {
 
             {!sessionStudent ? (
               <div className="space-y-3 p-5">
-                {initialProtocols.filter((protocol) => protocol.workouts.length > 0).map((protocol) => (
+                {trainingProtocols.filter((protocol) => protocol.workouts.length > 0).map((protocol) => (
                   <button key={protocol.id} type="button" onClick={() => setSessionStudent(protocol)} className="flex w-full items-center gap-3 rounded-2xl border border-[var(--border)] p-4 text-left transition hover:border-blue-500/50 hover:bg-blue-500/5">
                     <span className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-500/10 text-sm font-semibold text-blue-500">{protocol.student.split(" ").map((name) => name[0]).slice(0, 2).join("")}</span>
                     <div className="min-w-0 flex-1"><p className="font-semibold">{protocol.student}</p><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.workouts.length} treinos</p></div>
