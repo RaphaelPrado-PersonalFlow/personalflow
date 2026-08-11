@@ -1,7 +1,7 @@
 "use client";
 
 export type ChartAssessment = {
-  id: number;
+  id: string | number;
   date: string;
   weight: number;
   bodyFat: number;
