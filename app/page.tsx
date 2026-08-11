@@ -10,6 +10,7 @@ import PageHeader from "@/components/ui/PageHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import StatCard from "@/components/ui/StatCard";
 import { listTrainingProtocols } from "@/services/training";
+import { listWorkoutExecutionSummaries, type WorkoutExecutionSummary } from "@/services/training-sessions";
 import type { Protocol, Workout } from "@/types/training";
 
 type DashboardFilter = "appointments" | "active" | "assessments" | "expired";
@@ -36,9 +37,12 @@ export default function Home() {
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const [sessionStudent, setSessionStudent] = useState<Protocol | null>(null);
   const [trainingProtocols, setTrainingProtocols] = useState<Protocol[]>([]);
+  const [workoutExecutions, setWorkoutExecutions] = useState<Record<string, WorkoutExecutionSummary>>({});
 
   useEffect(() => {
-    listTrainingProtocols().then(setTrainingProtocols).catch(() => setTrainingProtocols([]));
+    Promise.all([listTrainingProtocols(), listWorkoutExecutionSummaries()])
+      .then(([protocols, executions]) => { setTrainingProtocols(protocols); setWorkoutExecutions(executions); })
+      .catch(() => { setTrainingProtocols([]); setWorkoutExecutions({}); });
   }, []);
 
   const openWorkoutPicker = (studentName?: string) => {
@@ -114,11 +118,14 @@ export default function Home() {
               <div className="p-5">
                 <button type="button" onClick={() => setSessionStudent(null)} className="mb-4 text-sm font-semibold text-blue-500">← Escolher outro aluno</button>
                 <div className="space-y-3">
-                  {sessionStudent.workouts.map((workout, index) => {
+                  {sessionStudent.workouts.map((workout) => {
                     const target = workout.targetExecutions ?? Math.max(1, Math.round((sessionStudent.frequency * 8) / sessionStudent.workouts.length));
-                    const completed = workout.completedExecutions ?? index + 2;
+                    const execution = workoutExecutions[workout.id];
+                    const completed = execution?.count ?? 0;
                     const progress = Math.min((completed / target) * 100, 100);
-                    const lastDates = ["22/07/2026", "19/07/2026", "16/07/2026"];
+                    const lastExecution = execution?.lastCompletedAt
+                      ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(execution.lastCompletedAt))
+                      : "Ainda não realizado";
                     return (
                       <button key={workout.id} type="button" onClick={() => startWorkout(sessionStudent, workout)} className="w-full rounded-2xl border border-[var(--border)] p-4 text-left transition hover:border-blue-500/60 hover:bg-blue-500/5">
                         <div className="flex items-start justify-between gap-3">
@@ -126,7 +133,7 @@ export default function Home() {
                           <span className="shrink-0 text-sm font-semibold text-blue-500">Iniciar →</span>
                         </div>
                         <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                          <div className="rounded-xl bg-[var(--surface-raised)] p-3"><span className="text-xs text-[var(--muted)]">Última execução</span><strong className="mt-1 block">{lastDates[index] ?? "Ainda não realizado"}</strong></div>
+                          <div className="rounded-xl bg-[var(--surface-raised)] p-3"><span className="text-xs text-[var(--muted)]">Última execução</span><strong className="mt-1 block">{lastExecution}</strong></div>
                           <div className="rounded-xl bg-[var(--surface-raised)] p-3"><span className="text-xs text-[var(--muted)]">Sessões realizadas</span><strong className="mt-1 block">{completed} de {target}</strong></div>
                         </div>
                         <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${progress}%` }} /></div>

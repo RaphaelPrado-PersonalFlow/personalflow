@@ -15,7 +15,9 @@ function mapSet(row: JsonRecord): TrainingSessionSet {
   return {
     id: String(row.id), prescribedSetId: row.prescribed_set_id ? String(row.prescribed_set_id) : null,
     setNumber: Number(row.set_number), status: row.status as TrainingSessionItemStatus,
-    isAdded: Boolean(row.is_added), isRemoved: Boolean(row.is_removed), method: String(row.planned_method ?? "conventional"),
+    isAdded: Boolean(row.is_added), isRemoved: Boolean(row.is_removed),
+    method: String(row.actual_method ?? row.planned_method ?? "conventional"),
+    actualMethod: row.actual_method ? String(row.actual_method) : null,
     plannedRepsMin: numberOrNull(row.planned_reps_min), plannedRepsMax: numberOrNull(row.planned_reps_max),
     plannedLoad: numberOrNull(row.planned_load), plannedLoadUnit: row.planned_load_unit ? String(row.planned_load_unit) : null,
     plannedRir: numberOrNull(row.planned_rir), plannedRpe: numberOrNull(row.planned_rpe),
@@ -96,8 +98,36 @@ export function updateSessionNotes(id: string, notes: string) {
   return rpc("update_training_session_details", { p_session_id: id, p_notes: notes });
 }
 export function completeTrainingSession(id: string, mode: TrainingSessionCompletionMode) {
-  return rpc("complete_training_session", { p_session_id: id, p_mode: mode });
+  return rpc("complete_training_session", { p_session_id: id, p_mode: mode }).then(async () => {
+    const session = await getTrainingSession(id);
+    if (!(["completed", "partial"].includes(session.status)) || !session.completedAt || session.durationSeconds == null) {
+      throw new Error("O banco não confirmou a conclusão da sessão.");
+    }
+    return session;
+  });
 }
 export function cancelTrainingSession(id: string, abandoned = false) {
   return rpc("cancel_training_session", { p_session_id: id, p_as_abandoned: abandoned });
+}
+
+export type WorkoutExecutionSummary = { count: number; lastCompletedAt: string | null };
+
+export async function listWorkoutExecutionSummaries(): Promise<Record<string, WorkoutExecutionSummary>> {
+  const { data, error } = await createClient()
+    .from("training_sessions")
+    .select("workout_id, completed_at")
+    .in("status", ["completed", "partial"])
+    .not("completed_at", "is", null)
+    .order("completed_at", { ascending: false });
+  if (error) throw error;
+  const rows = (data ?? []) as Array<{ workout_id: string; completed_at: string | null }>;
+  return rows.reduce((summaries: Record<string, WorkoutExecutionSummary>, row) => {
+    const workoutId = String(row.workout_id);
+    const current = summaries[workoutId];
+    summaries[workoutId] = {
+      count: (current?.count ?? 0) + 1,
+      lastCompletedAt: current?.lastCompletedAt ?? (row.completed_at ? String(row.completed_at) : null),
+    };
+    return summaries;
+  }, {});
 }

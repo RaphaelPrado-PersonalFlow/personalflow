@@ -228,7 +228,13 @@ function WorkoutsPageContent() {
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: string } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<string[]>([]);
   const [incompleteFinishOpen, setIncompleteFinishOpen] = useState(false);
+  const [sessionPersistenceError, setSessionPersistenceError] = useState("");
+  const [pendingSessionMutations, setPendingSessionMutations] = useState(0);
+  const [sessionCompleting, setSessionCompleting] = useState(false);
   const sessionBootstrapRef = useRef<string | null>(null);
+  const sessionMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const sessionMutationRevisionRef = useRef(0);
+  const sessionMutationFailedRef = useRef(false);
   const [periodizationOpen, setPeriodizationOpen] = useState(false);
   const [periodizationCount, setPeriodizationCount] = useState(1);
   const [periodizationWeeks, setPeriodizationWeeks] = useState(1);
@@ -274,6 +280,8 @@ function WorkoutsPageContent() {
             name: session.snapshot.workout.name, focus: session.snapshot.workout.focus, duration: 0, exercises: [], volume: [],
           };
           setActiveSessionRecord(session);
+          setSessionPersistenceError("");
+          setPersistenceError("");
           setSessionExercises(exercisesFromSession(session));
           setCompletedExercises(session.exercises.filter((item) => ["completed", "assumed_completed"].includes(item.status)).map((item) => item.id));
           setActiveSession({ protocol, workout });
@@ -315,6 +323,8 @@ function WorkoutsPageContent() {
         const session = await startTrainingSession({ workoutId: workout.id, idempotencyKey });
         sessionStorage.removeItem(storageKey);
         setActiveSessionRecord(session);
+        setSessionPersistenceError("");
+        setPersistenceError("");
         setCompletedExercises([]);
         setSessionExercises(exercisesFromSession(session));
         setActiveSession({ protocol, workout });
@@ -445,6 +455,37 @@ function WorkoutsPageContent() {
     }
   }
 
+  function reconcileSession(session: TrainingSession) {
+    setActiveSessionRecord(session);
+    setSessionExercises(exercisesFromSession(session));
+    setCompletedExercises(session.exercises.filter((item) => ["completed", "assumed_completed"].includes(item.status)).map((item) => item.id));
+  }
+
+  function persistSessionMutation(operation: () => Promise<unknown>, errorMessage: string) {
+    const sessionId = activeSessionRecord?.id;
+    if (!sessionId) return Promise.resolve();
+    const revision = ++sessionMutationRevisionRef.current;
+    sessionMutationFailedRef.current = false;
+    setSessionPersistenceError("");
+    setPendingSessionMutations((count) => count + 1);
+    const task = sessionMutationQueueRef.current.catch(() => undefined).then(async () => {
+      await operation();
+      const refreshed = await getTrainingSession(sessionId);
+      if (refreshed.status !== "in_progress") throw new Error("A sessão deixou de estar disponível para edição.");
+      if (revision === sessionMutationRevisionRef.current) reconcileSession(refreshed);
+    }).catch(async (error: unknown) => {
+      sessionMutationFailedRef.current = true;
+      const message = error instanceof Error ? error.message : errorMessage;
+      setSessionPersistenceError(message);
+      setPersistenceError(message);
+      if (revision === sessionMutationRevisionRef.current) {
+        try { reconcileSession(await getTrainingSession(sessionId)); } catch { /* mantém a sessão visível */ }
+      }
+    }).finally(() => setPendingSessionMutations((count) => Math.max(0, count - 1)));
+    sessionMutationQueueRef.current = task;
+    return task;
+  }
+
   async function toggleExercise(id: string) {
     const exercise = sessionExercises.find((item) => item.id === id);
     if (!exercise) return;
@@ -452,8 +493,7 @@ function WorkoutsPageContent() {
     const status: TrainingSessionItemStatus = completed ? "pending" : "completed";
     setCompletedExercises((current) => completed ? current.filter((item) => item !== id) : [...current, id]);
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, executionStatus: status } : item));
-    try { await updateSessionExercise(exercise.sessionExerciseId, { status }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar o exercício."); }
+    await persistSessionMutation(() => updateSessionExercise(exercise.sessionExerciseId, { status }), "Não foi possível salvar o exercício.");
   }
 
   async function updateSessionExerciseStatus(id: string, status: TrainingSessionItemStatus) {
@@ -463,8 +503,7 @@ function WorkoutsPageContent() {
     setCompletedExercises((current) => status === "completed"
       ? current.includes(id) ? current : [...current, id]
       : current.filter((item) => item !== id));
-    try { await updateSessionExercise(exercise.sessionExerciseId, { status }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar o estado do exercício."); }
+    await persistSessionMutation(() => updateSessionExercise(exercise.sessionExerciseId, { status }), "Não foi possível salvar o estado do exercício.");
   }
 
   async function changeSessionSeries(id: string, direction: -1 | 1) {
@@ -472,30 +511,20 @@ function WorkoutsPageContent() {
     if (!exercise) return;
     const configurations = seriesConfigurations(exercise).filter((item) => !item.isRemoved);
     if (direction === -1 && configurations.length === 1) return;
-    try {
-      if (direction === 1) {
+    if (direction === 1) {
         const previous = configurations.at(-1);
         const newId = crypto.randomUUID();
-        await addSessionSet(exercise.sessionExerciseId, newId, {
+        await persistSessionMutation(() => addSessionSet(exercise.sessionExerciseId, newId, {
           planned_set_type: "working", planned_method: "conventional",
           planned_reps_min: Number(previous?.reps.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 10),
           planned_reps_max: Number(previous?.reps.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 10),
           planned_load: Number(previous?.load.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0), planned_load_unit: "kg",
-        });
-        setSessionExercises((current) => current.map((item) => item.id === id ? {
-          ...item, changed: true, sets: configurations.length + 1,
-          seriesConfigurations: [...configurations, { id: newId, method: "Convencional", reps: "10", load: previous?.load ?? item.load, executionStatus: "pending" }],
-        } : item));
+        }), "Não foi possível adicionar a série.");
       } else {
         const removed = configurations.at(-1);
         if (!removed?.id) return;
-        await removeSessionSet(removed.id);
-        setSessionExercises((current) => current.map((item) => item.id === id ? {
-          ...item, changed: true, sets: configurations.length - 1,
-          seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === removed.id ? { ...set, isRemoved: true, executionStatus: "skipped" } : set),
-        } : item));
+        await persistSessionMutation(() => removeSessionSet(removed.id!), "Não foi possível remover a série.");
       }
-    } catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível alterar as séries."); }
   }
 
   async function updateSessionExerciseValue(id: string, field: "name" | "load", value: string) {
@@ -508,22 +537,20 @@ function WorkoutsPageContent() {
       const configurations = seriesConfigurations(exercise).map((configuration) => ({ ...configuration, load: value }));
       return { ...next, seriesConfigurations: configurations };
     }));
-    try {
-      if (field === "name") {
+    if (field === "name") {
         const reference = exerciseCatalog.find((item) => item.name === value);
-        if (!reference) throw new Error("Exercício substituto não encontrado.");
-        await updateSessionExercise(currentExercise.sessionExerciseId, {
+        if (!reference) { setSessionPersistenceError("Exercício substituto não encontrado."); return; }
+        await persistSessionMutation(() => updateSessionExercise(currentExercise.sessionExerciseId, {
           execution_source: "substituted", executed_exercise_source: reference.source,
           executed_system_exercise_id: reference.source === "system" ? reference.id : null,
           executed_custom_exercise_id: reference.source === "custom" ? reference.id : null,
           executed_name_snapshot: reference.name, executed_metadata_snapshot: { muscles: reference.muscles },
           muscle_participation_snapshot: reference.muscles,
-        });
+        }), "Não foi possível substituir o exercício.");
       } else {
-        await Promise.all((currentExercise.seriesConfigurations ?? []).filter((set) => set.id && !set.isRemoved).map((set) =>
-          updateSessionSet(set.id!, { actual_load: Number(value.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0), actual_load_unit: "kg" })));
+        await persistSessionMutation(() => Promise.all((currentExercise.seriesConfigurations ?? []).filter((set) => set.id && !set.isRemoved).map((set) =>
+          updateSessionSet(set.id!, { actual_load: Number(value.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0), actual_load_unit: "kg" }))), "Não foi possível salvar a carga.");
       }
-    } catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a alteração."); }
   }
 
   async function adjustSessionLoad(id: string, delta: -2.5 | 2.5, seriesIndex?: number) {
@@ -540,8 +567,7 @@ function WorkoutsPageContent() {
       const load = configurations[0]?.load ?? adjustedLoad(exercise.load, delta);
       return { ...exercise, changed: true, load, seriesConfigurations: configurations };
     }));
-    try { await updateSessionSet(targetSet.id, { actual_load: Number(nextLoad.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 0), actual_load_unit: "kg" }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a carga."); }
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_load: Number(nextLoad.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 0), actual_load_unit: "kg" }), "Não foi possível salvar a carga.");
   }
 
   async function adjustSessionRepetitions(id: string, delta: -1 | 1, seriesIndex: number) {
@@ -559,8 +585,7 @@ function WorkoutsPageContent() {
       });
       return { ...exercise, changed: true, sets: configurations.length, reps: configurations.map((item) => item.reps).join("/"), seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
     }));
-    try { await updateSessionSet(targetSet.id, { actual_reps: actualReps }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar as repetições."); }
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_reps: actualReps }), "Não foi possível salvar as repetições.");
   }
 
   async function updateSessionSeriesStatus(id: string, seriesIndex: number, status: TrainingSessionItemStatus) {
@@ -570,35 +595,42 @@ function WorkoutsPageContent() {
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
       seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, executionStatus: status } : set),
     } : item));
-    try { await updateSessionSet(targetSet.id, { status }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar o estado da série."); }
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { status }), "Não foi possível salvar o estado da série.");
   }
 
-  async function updateSessionSeriesEffort(id: string, seriesIndex: number, field: "actual_rir" | "actual_rpe", value: string) {
+  async function updateSessionSeriesEffort(id: string, seriesIndex: number, value: string) {
     const exercise = sessionExercises.find((item) => item.id === id);
     const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
     if (!targetSet?.id) return;
     const parsed = value === "" ? null : Number(value.replace(",", "."));
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
-      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, [field === "actual_rir" ? "actualRir" : "actualRpe"]: parsed } : set),
+      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, actualRir: parsed } : set),
     } : item));
-    try { await updateSessionSet(targetSet.id, { [field]: parsed }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar RIR/RPE."); }
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_rir: parsed }), "Não foi possível salvar o RIR.");
+  }
+
+  async function updateSessionSeriesMethod(id: string, seriesIndex: number, method: AdvancedMethod) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    if (!targetSet?.id) return;
+    const methodToDb: Record<AdvancedMethod, string> = { "Convencional": "conventional", "Drop-set": "drop_set", "Rest-pause": "rest_pause", "Cluster set": "cluster", "Pirâmide": "pyramid", "Myo-reps": "myo_reps", "Bi-set": "bi_set" };
+    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, changed: true,
+      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, method } : set),
+    } : item));
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_method: methodToDb[method] }), "Não foi possível salvar o método.");
   }
 
   async function updateSessionExerciseNotes(id: string, notes: string) {
     const exercise = sessionExercises.find((item) => item.id === id);
     if (!exercise) return;
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, notes, changed: true } : item));
-    try { await updateSessionExercise(exercise.sessionExerciseId, { notes }); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a observação."); }
+    await persistSessionMutation(() => updateSessionExercise(exercise.sessionExerciseId, { notes }), "Não foi possível salvar a observação.");
   }
 
   async function updateActiveSessionNotes(notes: string) {
     if (!activeSessionRecord) return;
     setActiveSessionRecord({ ...activeSessionRecord, notes });
-    try { await updateSessionNotes(activeSessionRecord.id, notes); }
-    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a observação."); }
+    await persistSessionMutation(() => updateSessionNotes(activeSessionRecord.id, notes), "Não foi possível salvar a observação.");
   }
 
   function compatibleExerciseNames(exercise: Exercise) {
@@ -819,16 +851,25 @@ function WorkoutsPageContent() {
 
   async function completeSession(mode: TrainingSessionCompletionMode) {
     if (!activeSessionRecord) return;
+    setSessionCompleting(true);
+    setSessionPersistenceError("");
     try {
-      await completeTrainingSession(activeSessionRecord.id, mode);
+      await sessionMutationQueueRef.current;
+      if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar.");
+      const completedSession = await completeTrainingSession(activeSessionRecord.id, mode);
+      if (completedSession.status !== (mode === "partial" ? "partial" : "completed")) throw new Error("O status final confirmado pelo banco é inválido.");
       setIncompleteFinishOpen(false);
       setSessionExercises([]);
       setActiveSessionRecord(null);
       setActiveSession(null);
       sessionBootstrapRef.current = null;
-      router.push("/");
+      router.replace("/");
     } catch (error) {
-      setPersistenceError(error instanceof Error ? error.message : "Não foi possível concluir a sessão.");
+      const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão.";
+      setSessionPersistenceError(message);
+      setPersistenceError(message);
+    } finally {
+      setSessionCompleting(false);
     }
   }
 
@@ -1211,9 +1252,9 @@ function WorkoutsPageContent() {
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
-      {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} sessionNotes={activeSessionRecord?.notes} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onUpdateExerciseStatus={updateSessionExerciseStatus} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onUpdateSeriesStatus={updateSessionSeriesStatus} onUpdateSeriesEffort={updateSessionSeriesEffort} onUpdateExerciseNotes={updateSessionExerciseNotes} onUpdateSessionNotes={updateActiveSessionNotes} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExerciseValue} onFinish={finishSession} />}
+      {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} sessionNotes={activeSessionRecord?.notes} persistenceError={sessionPersistenceError} isSaving={pendingSessionMutations > 0} isCompleting={sessionCompleting} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onUpdateExerciseStatus={updateSessionExerciseStatus} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onUpdateSeriesStatus={updateSessionSeriesStatus} onUpdateSeriesEffort={updateSessionSeriesEffort} onUpdateSeriesMethod={updateSessionSeriesMethod} onUpdateExerciseNotes={updateSessionExerciseNotes} onUpdateSessionNotes={updateActiveSessionNotes} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExerciseValue} onFinish={finishSession} />}
 
-      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Como concluir a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">No modo conforme planejado, itens não alterados e não pulados serão registrados como execução presumida. Faixas de repetições permanecem como faixas, sem inventar um valor exato.</p><div className="mt-6 space-y-2"><Button className="w-full" onClick={finishAndCompleteAll}>Executado conforme planejado</Button><Button variant="secondary" className="w-full" onClick={finishPartially}>Concluir somente o confirmado</Button><Button variant="ghost" className="w-full" onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
+      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Como concluir a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">No modo conforme planejado, itens não alterados e não pulados serão registrados como execução presumida. Faixas de repetições permanecem como faixas, sem inventar um valor exato.</p>{sessionPersistenceError && <p role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs font-medium text-red-600">{sessionPersistenceError}</p>}<div className="mt-6 space-y-2"><Button className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishAndCompleteAll}>{sessionCompleting ? "Finalizando…" : "Executado conforme planejado"}</Button><Button variant="secondary" className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishPartially}>Concluir somente o confirmado</Button><Button variant="ghost" className="w-full" disabled={sessionCompleting} onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
 
     </MainLayout>
   );

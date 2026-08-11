@@ -10,6 +10,7 @@ export type TrainingSessionSet = {
   isAdded: boolean;
   isRemoved: boolean;
   method: string;
+  actualMethod: string | null;
   plannedRepsMin: number | null;
   plannedRepsMax: number | null;
   plannedLoad: number | null;

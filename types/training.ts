@@ -56,7 +56,6 @@ export type Workout = {
   exercises: PrescribedExercise[];
   volume: MuscleVolume[];
   targetExecutions?: number;
-  completedExecutions?: number;
 };
 
 export type TrainingPeriod = {
