@@ -32,7 +32,7 @@ type PeriodRow = {
   status: string; workouts: WorkoutRow[];
 };
 type ProtocolRow = {
-  id: string; student_id: string; name: string; objective: string; status: string;
+  id: string; student_id: string; display_order: number; name: string; objective: string; status: string;
   start_date: string | null; end_date: string | null; planned_weekly_frequency: number;
   students: { full_name: string } | { full_name: string }[] | null; training_periods: PeriodRow[];
 };
@@ -59,6 +59,21 @@ function dateToDisplay(value: string | null) {
 function displayToDate(value: string) {
   const match = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   return match ? `${match[3]}-${match[2]}-${match[1]}` : null;
+}
+
+export function protocolStatusFromDates(start: string, end: string): ProtocolStatus {
+  const parse = (value: string) => {
+    const match = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    return match ? Number(`${match[3]}${match[2]}${match[1]}`) : null;
+  };
+  const startKey = parse(start);
+  const endKey = parse(end);
+  if (startKey == null || endKey == null || endKey < startKey) return "Rascunho";
+  const today = new Date();
+  const todayKey = today.getFullYear() * 10_000 + (today.getMonth() + 1) * 100 + today.getDate();
+  if (startKey > todayKey) return "Programado";
+  if (endKey < todayKey) return "Concluído";
+  return "Ativo";
 }
 
 function repetitions(set: SetRow) {
@@ -110,15 +125,15 @@ function mapProtocol(row: ProtocolRow): Protocol {
   const active = periods.find((period) => period.status === "Ativo") ?? periods[0];
   const student = Array.isArray(row.students) ? row.students[0] : row.students;
   return {
-    id: row.id, studentId: row.student_id, student: student?.full_name ?? "Aluno",
+    id: row.id, displayOrder: row.display_order, studentId: row.student_id, student: student?.full_name ?? "Aluno",
     name: row.name, objective: row.objective, frequency: row.planned_weekly_frequency,
-    status: statusFromDb[row.status] ?? "Rascunho", start: dateToDisplay(row.start_date), end: dateToDisplay(row.end_date),
+    status: row.status === "archived" ? "Arquivado" : protocolStatusFromDates(dateToDisplay(row.start_date), dateToDisplay(row.end_date)), start: dateToDisplay(row.start_date), end: dateToDisplay(row.end_date),
     periods, activePeriodId: active?.id ?? "", workouts: active?.workouts ?? [],
   };
 }
 
 const protocolSelect = `
-  id, student_id, name, objective, status, start_date, end_date, planned_weekly_frequency,
+  id, student_id, display_order, name, objective, status, start_date, end_date, planned_weekly_frequency,
   students!inner(full_name),
   training_periods(id, name, sequence, start_date, end_date, status,
     workouts(id, period_id, lineage_id, version, is_current, published_at, name, focus, sequence,
@@ -134,7 +149,7 @@ export async function listTrainingStudents(): Promise<TrainingStudent[]> {
 }
 
 export async function listTrainingProtocols(): Promise<Protocol[]> {
-  const { data, error } = await createClient().from("training_protocols").select(protocolSelect).order("created_at", { ascending: false });
+  const { data, error } = await createClient().from("training_protocols").select(protocolSelect).order("display_order").order("created_at");
   if (error) throw error;
   return ((data ?? []) as unknown as ProtocolRow[]).map(mapProtocol);
 }
@@ -145,13 +160,39 @@ export async function getTrainingProtocol(id: string) {
   return mapProtocol(data as unknown as ProtocolRow);
 }
 
+async function deleteOwnedTrainingRecord(table: "training_protocols" | "training_periods", id: string, label: string) {
+  const { data, error } = await createClient().from(table).delete().eq("id", id).select("id");
+  if (error) {
+    if (error.code === "23503") {
+      throw new Error(`N\u00e3o foi poss\u00edvel excluir ${label} porque ele possui um v\u00ednculo hist\u00f3rico. Arquive-o para preservar esse hist\u00f3rico.`);
+    }
+    throw error;
+  }
+  if (data?.length !== 1) {
+    throw new Error(`N\u00e3o foi poss\u00edvel excluir ${label}. Verifique se ele ainda existe e pertence ao seu usu\u00e1rio.`);
+  }
+}
+
+export async function deleteTrainingProtocol(id: string) {
+  return deleteOwnedTrainingRecord("training_protocols", id, "o protocolo");
+}
+
+export async function deleteTrainingPeriod(id: string) {
+  return deleteOwnedTrainingRecord("training_periods", id, "o per\u00edodo");
+}
+
+export async function reorderTrainingProtocols(orderedIds: string[]) {
+  const { error } = await createClient().rpc("reorder_training_protocols", { ordered_ids: orderedIds });
+  if (error) throw error;
+}
+
 export async function createTrainingProtocol(input: {
   studentId: string; name: string; objective: string; frequency: number; start: string; end: string;
 }) {
   const protocolId = crypto.randomUUID();
   const periodId = crypto.randomUUID();
   const protocol: Protocol = {
-    id: protocolId, studentId: input.studentId, student: "", name: input.name,
+    id: protocolId, displayOrder: 1, studentId: input.studentId, student: "", name: input.name,
     objective: input.objective, frequency: input.frequency, status: "Rascunho",
     start: input.start, end: input.end, activePeriodId: periodId, workouts: [],
     periods: [{ id: periodId, name: input.name || "Período 1", sequence: 1, start: input.start, end: input.end, status: "Rascunho", workouts: [] }],
@@ -168,9 +209,10 @@ export async function saveProtocol(protocol: Protocol, catalog: ExerciseCatalogR
 }
 
 function prescriptionPayload(protocol: Protocol, catalog: ExerciseCatalogReference[]) {
+  const automaticStatus = protocol.status === "Arquivado" ? "Arquivado" : protocolStatusFromDates(protocol.start, protocol.end);
   return {
     id: protocol.id, student_id: protocol.studentId, name: protocol.name ?? protocol.objective,
-    objective: protocol.objective, status: statusToDb[protocol.status], start_date: displayToDate(protocol.start),
+    objective: protocol.objective, status: statusToDb[automaticStatus], start_date: displayToDate(protocol.start),
     end_date: displayToDate(protocol.end), planned_weekly_frequency: protocol.frequency,
     periods: protocol.periods.map((period) => ({
       id: period.id, name: period.name, sequence: period.sequence, start_date: displayToDate(period.start),

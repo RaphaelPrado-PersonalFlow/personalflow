@@ -66,6 +66,7 @@ export type TrainingPeriod = {
 
 export type Protocol = {
   id: string;
+  displayOrder: number;
   studentId: string;
   student: string;
   name?: string;
