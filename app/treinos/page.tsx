@@ -13,10 +13,14 @@ import VolumeMetricToggle from "@/components/training/VolumeMetricToggle";
 import { formatVolumeValue, volumeByMuscle, type VolumeMetric } from "@/lib/training-volume";
 import { exerciseRepository } from "@/services/exercise-repository";
 import { createTrainingProtocol, deleteTrainingPeriod, listTrainingProtocols, listTrainingStudents, saveProtocol, systemExerciseReferences } from "@/services/training";
+import { addSessionSet, completeTrainingSession, getTrainingSession, removeSessionSet, startTrainingSession, updateSessionExercise, updateSessionNotes, updateSessionSet } from "@/services/training-sessions";
 import type { AdvancedMethod, ExerciseCatalogReference, PrescribedExercise as Exercise, Protocol, SeriesConfiguration, TrainingStudent, Workout } from "@/types/training";
+import type { TrainingSession, TrainingSessionCompletionMode, TrainingSessionItemStatus } from "@/types/training-session";
 
-type SessionExercise = Exercise & { originalExerciseId: string; changed?: boolean };
-type WeeklyVolumeImpact = { muscle: string; before: number; after: number; difference: number };
+type SessionExercise = Exercise & {
+  originalExerciseId: string; sessionExerciseId: string; executionStatus: TrainingSessionItemStatus;
+  notes?: string | null; changed?: boolean;
+};
 const systemExerciseCatalog = systemExerciseReferences();
 
 function matchesExerciseSearch(exercise: { name: string; aliases: string }, query: string) {
@@ -79,6 +83,39 @@ function formatSeriesPrescription(configurations: SeriesConfiguration[]) {
   }).join(" + ");
 }
 
+function sessionReps(min: number | null, max: number | null, actual: number | null) {
+  if (actual != null) return String(actual);
+  if (min == null && max == null) return "—";
+  if (max == null || min === max) return String(min ?? max);
+  return `${min}–${max}`;
+}
+
+function sessionLoad(planned: number | null, actual: number | null, unit: string | null) {
+  const value = actual ?? planned;
+  return value == null ? "—" : `${value.toLocaleString("pt-BR")} ${unit ?? "kg"}`;
+}
+
+function exercisesFromSession(session: TrainingSession): SessionExercise[] {
+  return session.exercises.map((exercise) => {
+    const configurations: SeriesConfiguration[] = exercise.sets.map((set) => ({
+      id: set.id, method: ({ conventional: "Convencional", drop_set: "Drop-set", rest_pause: "Rest-pause", cluster: "Cluster set", pyramid: "Pirâmide", myo_reps: "Myo-reps", bi_set: "Bi-set" } as Record<string, AdvancedMethod>)[set.method] ?? "Convencional",
+      reps: sessionReps(set.plannedRepsMin, set.plannedRepsMax, set.actualReps),
+      load: sessionLoad(set.plannedLoad, set.actualLoad, set.actualLoadUnit ?? set.plannedLoadUnit),
+      executionStatus: set.status, actualRir: set.actualRir, actualRpe: set.actualRpe,
+      notes: set.notes, isRemoved: set.isRemoved,
+    }));
+    return {
+      id: exercise.id, originalExerciseId: exercise.prescribedExerciseId ?? exercise.id,
+      sessionExerciseId: exercise.id, executionStatus: exercise.status, name: exercise.name,
+      exerciseSource: exercise.exerciseSource, systemExerciseId: exercise.systemExerciseId,
+      customExerciseId: exercise.customExerciseId, sets: configurations.filter((set) => !set.isRemoved).length,
+      reps: configurations[0]?.reps ?? "", load: configurations[0]?.load ?? "—",
+      prescription: formatSeriesPrescription(configurations.filter((set) => !set.isRemoved)),
+      seriesConfigurations: configurations, notes: exercise.notes, changed: exercise.changed,
+    };
+  });
+}
+
 function exerciseMethodSummary(exercise: Exercise) {
   const methods = [...new Set(seriesConfigurations(exercise).map((item) => item.method).filter((method) => method !== "Convencional"))];
   return methods.length ? methods.join(" + ") : "Convencional";
@@ -111,39 +148,6 @@ function calculateProtocolVolume(workouts: Workout[]) {
     return result;
   }, {});
   return Object.entries(totals).map(([muscle, sets]) => ({ muscle, sets })).sort((a, b) => b.sets - a.sets);
-}
-
-function weeklyWorkoutOccurrences(protocol: Protocol, workoutIndex: number) {
-  if (protocol.workouts.length === 0) return 0;
-  const base = Math.floor(protocol.frequency / protocol.workouts.length);
-  return base + (workoutIndex < protocol.frequency % protocol.workouts.length ? 1 : 0);
-}
-
-function calculateWeeklyVolumeImpact(protocol: Protocol, changedWorkoutId: string, executedExercises: Exercise[], catalog = systemExerciseCatalog): WeeklyVolumeImpact[] {
-  const before = new Map<string, number>();
-  const after = new Map<string, number>();
-
-  protocol.workouts.forEach((workout, index) => {
-    const occurrences = weeklyWorkoutOccurrences(protocol, index);
-    const originalVolume = calculateWorkoutVolume(workout.exercises, catalog);
-    const resultingVolume = calculateWorkoutVolume(workout.id === changedWorkoutId ? executedExercises : workout.exercises, catalog);
-
-    originalVolume.forEach(({ muscle, sets }) => before.set(muscle, (before.get(muscle) ?? 0) + sets * occurrences));
-    resultingVolume.forEach(({ muscle, sets }) => after.set(muscle, (after.get(muscle) ?? 0) + sets * occurrences));
-  });
-
-  return [...new Set([...before.keys(), ...after.keys()])]
-    .map((muscle) => {
-      const previous = before.get(muscle) ?? 0;
-      const next = after.get(muscle) ?? 0;
-      return { muscle, before: previous, after: next, difference: next - previous };
-    })
-    .filter(({ difference }) => Math.abs(difference) >= 0.01)
-    .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
-}
-
-function formatWeeklySets(value: number) {
-  return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
 }
 
 function restInSeconds(rest = "60''") {
@@ -201,10 +205,11 @@ function WorkoutsPageContent() {
   const [status, setStatus] = useState("Todos");
   const [volumeMetric, setVolumeMetric] = useState<VolumeMetric>("series");
   const [newProtocolOpen, setNewProtocolOpen] = useState(false);
+  const [newProtocolStudentId, setNewProtocolStudentId] = useState("");
   const [activeSession, setActiveSession] = useState<{ protocol: Protocol; workout: Workout } | null>(null);
+  const [activeSessionRecord, setActiveSessionRecord] = useState<TrainingSession | null>(null);
   const [sessionExercises, setSessionExercises] = useState<SessionExercise[]>([]);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | null>(null);
-  const [finishChoiceOpen, setFinishChoiceOpen] = useState(false);
   const [workoutToEdit, setWorkoutToEdit] = useState<{ protocolId: string; workout: Workout } | null>(null);
   const [workoutToRemove, setWorkoutToRemove] = useState<{ protocolId: string; workout: Workout } | null>(null);
   const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: string; periodId: string; workoutId: string } | null>(null);
@@ -223,6 +228,7 @@ function WorkoutsPageContent() {
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: string } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<string[]>([]);
   const [incompleteFinishOpen, setIncompleteFinishOpen] = useState(false);
+  const sessionBootstrapRef = useRef<string | null>(null);
   const [periodizationOpen, setPeriodizationOpen] = useState(false);
   const [periodizationCount, setPeriodizationCount] = useState(1);
   const [periodizationWeeks, setPeriodizationWeeks] = useState(1);
@@ -247,46 +253,131 @@ function WorkoutsPageContent() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const student = searchParams.get("iniciar");
-      const workoutName = searchParams.get("treino");
+    const timer = window.setTimeout(async () => {
+      const sessionId = searchParams.get("sessao");
+      const contextStudentId = searchParams.get("aluno");
       const protocolId = searchParams.get("protocolo");
       const workoutId = searchParams.get("treinoId");
-      const protocol = protocolId
-        ? protocols.find((item) => item.id === protocolId)
-        : protocols.find((item) => item.studentId === student || item.student === student);
-      const workout = workoutId
-        ? protocol?.workouts.find((item) => item.id === workoutId)
-        : protocol?.workouts.find((item) => !workoutName || item.name === workoutName) ?? protocol?.workouts[0];
-      if (!protocol || !workout) return;
-      const exercises = workout.exercises.map((exercise) => {
-        const configurations = seriesConfigurations(exercise);
-        return { ...exercise, originalExerciseId: exercise.id, sets: configurations.length, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
-      });
-      setCompletedExercises([]);
-      setSessionExercises(exercises);
-      setActiveSession({ protocol, workout });
+      if (sessionId) {
+        if (sessionBootstrapRef.current === sessionId) return;
+        sessionBootstrapRef.current = sessionId;
+        try {
+          const session = await getTrainingSession(sessionId);
+          if (session.status !== "in_progress") return;
+          const protocol = protocols.find((item) => item.id === session.protocolId);
+          if (!protocol) throw new Error("O protocolo desta sessão não está disponível.");
+          if (protocol.studentId !== session.studentId) throw new Error("A sessão não corresponde ao aluno do protocolo.");
+          const currentWorkout = protocol.periods.flatMap((period) => period.workouts).find((item) => item.id === session.workoutId);
+          const workout: Workout = currentWorkout ?? {
+            id: session.workoutId, periodId: session.periodId, lineageId: session.snapshot.workout.lineage_id,
+            version: session.snapshot.workout.version, isCurrent: false, publishedAt: null,
+            name: session.snapshot.workout.name, focus: session.snapshot.workout.focus, duration: 0, exercises: [], volume: [],
+          };
+          setActiveSessionRecord(session);
+          setSessionExercises(exercisesFromSession(session));
+          setCompletedExercises(session.exercises.filter((item) => ["completed", "assumed_completed"].includes(item.status)).map((item) => item.id));
+          setActiveSession({ protocol, workout });
+        } catch (error) {
+          sessionBootstrapRef.current = null;
+          setPersistenceError(error instanceof Error ? error.message : "Não foi possível retomar a sessão.");
+        }
+        return;
+      }
+      if (!protocolId && !workoutId) {
+        sessionBootstrapRef.current = null;
+        setActiveSession(null);
+        setActiveSessionRecord(null);
+        setSessionExercises([]);
+        setCompletedExercises([]);
+        return;
+      }
+      if (!protocolId || !workoutId) {
+        setPersistenceError("Não foi possível iniciar: protocolo e treino precisam estar explícitos na URL.");
+        return;
+      }
+      const protocol = protocols.find((item) => item.id === protocolId);
+      if (!protocol || (contextStudentId && protocol.studentId !== contextStudentId)) {
+        setPersistenceError("O protocolo não pertence ao aluno informado.");
+        return;
+      }
+      const workout = protocol.periods.flatMap((period) => period.workouts).find((item) => item.id === workoutId);
+      if (!workout) {
+        setPersistenceError("O treino informado não pertence a este protocolo.");
+        return;
+      }
+      const bootstrapKey = `${protocol.id}:${workout.id}`;
+      if (sessionBootstrapRef.current === bootstrapKey) return;
+      sessionBootstrapRef.current = bootstrapKey;
+      const storageKey = `personalflow:session-start:${bootstrapKey}`;
+      const idempotencyKey = sessionStorage.getItem(storageKey) ?? crypto.randomUUID();
+      sessionStorage.setItem(storageKey, idempotencyKey);
+      try {
+        const session = await startTrainingSession({ workoutId: workout.id, idempotencyKey });
+        sessionStorage.removeItem(storageKey);
+        setActiveSessionRecord(session);
+        setCompletedExercises([]);
+        setSessionExercises(exercisesFromSession(session));
+        setActiveSession({ protocol, workout });
+        router.replace(`/treinos?sessao=${session.id}`);
+      } catch (error) {
+        sessionBootstrapRef.current = null;
+        setPersistenceError(error instanceof Error ? error.message : "Não foi possível iniciar a sessão.");
+      }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [protocols, searchParams]);
+  }, [protocols, router, searchParams]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const newProtocolStudent = searchParams.get("novoProtocolo");
-      if (newProtocolStudent) setNewProtocolOpen(true);
+      if (newProtocolStudent && students.some((item) => item.id === newProtocolStudent)) {
+        setNewProtocolStudentId(newProtocolStudent);
+        setNewProtocolOpen(true);
+      }
+      const contextStudentId = searchParams.get("aluno");
       const protocolId = searchParams.get("editarProtocolo");
       const periodId = searchParams.get("periodo");
       const workoutId = searchParams.get("editarTreino");
-      if (!protocolId) { initializedEditorQuery.current = ""; return; }
-      const queryKey = `${protocolId}:${periodId ?? ""}:${workoutId ?? ""}`;
+      if (!protocolId) {
+        initializedEditorQuery.current = "";
+        setPrescriptionEditor(null);
+        setWorkoutDrafts({});
+        setDraftExercises([]);
+        setExpandedEditorExercise(null);
+        setEditingWorkoutDetails(null);
+        setPeriodizationOpen(false);
+        return;
+      }
+      if (!contextStudentId) {
+        setPersistenceError("O editor exige um aluno explícito na URL.");
+        setPrescriptionEditor(null);
+        return;
+      }
+      const queryKey = `${contextStudentId}:${protocolId}:${periodId ?? ""}:${workoutId ?? ""}`;
       if (initializedEditorQuery.current === queryKey) return;
       const protocol = protocols.find((item) => item.id === protocolId);
-      if (!protocol) return;
-      const selectedPeriod = protocol.periods.find((item) => item.id === periodId)
-        ?? protocol.periods.find((item) => item.id === protocol.activePeriodId)
-        ?? protocol.periods[0];
-      if (!selectedPeriod) return;
-      const existingWorkout = selectedPeriod.workouts.find((item) => item.id === workoutId) ?? selectedPeriod.workouts[0];
+      if (!protocol || protocol.studentId !== contextStudentId) {
+        setPersistenceError("O protocolo não pertence ao aluno informado.");
+        setPrescriptionEditor(null);
+        return;
+      }
+      if (!periodId) {
+        setPersistenceError("O editor exige um período explícito na URL.");
+        setPrescriptionEditor(null);
+        return;
+      }
+      const selectedPeriod = protocol.periods.find((item) => item.id === periodId);
+      if (!selectedPeriod) {
+        setPersistenceError("O período não pertence ao protocolo informado.");
+        setPrescriptionEditor(null);
+        return;
+      }
+      const existingWorkout = workoutId ? selectedPeriod.workouts.find((item) => item.id === workoutId) : undefined;
+      if (workoutId && !existingWorkout) {
+        setPersistenceError("O treino não pertence ao período informado.");
+        setPrescriptionEditor(null);
+        return;
+      }
       const workout = existingWorkout ?? createEmptyWorkout(selectedPeriod.id, 0);
       const periodWorkouts = existingWorkout ? selectedPeriod.workouts : [workout];
       const editingProtocol = activatePeriod(protocol, selectedPeriod.id, periodWorkouts);
@@ -298,11 +389,13 @@ function WorkoutsPageContent() {
       if (searchParams.get("periodizar") === "1") setPeriodizationOpen(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [protocols, searchParams]);
+  }, [protocols, searchParams, students]);
 
   const filteredStudentGroups = useMemo(() => {
     const normalized = query.toLocaleLowerCase("pt-BR");
-    const groups = new Map<string, { studentId: string; student: string; protocols: Protocol[] }>();
+    const groups = new Map<string, { studentId: string; student: string; protocols: Protocol[] }>(
+      students.map((student) => [student.id, { studentId: student.id, student: student.fullName, protocols: [] }]),
+    );
     protocols.forEach((protocol) => {
       const group = groups.get(protocol.studentId) ?? { studentId: protocol.studentId, student: protocol.student, protocols: [] };
       group.protocols.push(protocol);
@@ -312,12 +405,7 @@ function WorkoutsPageContent() {
       (status === "Todos" || group.protocols.some((protocol) => protocol.status === status)) &&
       (!normalized || group.student.toLocaleLowerCase("pt-BR").includes(normalized) || group.protocols.some((protocol) => protocol.objective.toLocaleLowerCase("pt-BR").includes(normalized))),
     );
-  }, [protocols, query, status]);
-
-  const weeklyVolumeImpact = useMemo(() => {
-    if (!activeSession) return [];
-    return calculateWeeklyVolumeImpact(activeSession.protocol, activeSession.workout.id, sessionExercises, exerciseCatalog);
-  }, [activeSession, exerciseCatalog, sessionExercises]);
+  }, [protocols, query, status, students]);
 
   const exerciseMuscleGroups = useMemo(
     () => Array.from(new Set(exerciseCatalog.flatMap((exercise) =>
@@ -337,6 +425,10 @@ function WorkoutsPageContent() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const studentId = String(data.get("student"));
+    if (!students.some((item) => item.id === studentId)) {
+      setPersistenceError("Selecione explicitamente o aluno do protocolo.");
+      return;
+    }
     const name = String(data.get("name") || "").trim();
     const objective = String(data.get("objective"));
     const frequency = Number(data.get("frequency"));
@@ -346,29 +438,69 @@ function WorkoutsPageContent() {
       const protocol = await createTrainingProtocol({ studentId, name, objective, frequency, start, end });
       setProtocols((current) => [protocol, ...current]);
       setNewProtocolOpen(false);
+      setNewProtocolStudentId("");
       event.currentTarget.reset();
     } catch (error) {
       setPersistenceError(error instanceof Error ? error.message : "Não foi possível criar o protocolo.");
     }
   }
 
-  function toggleExercise(id: string) {
-    setCompletedExercises((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  async function toggleExercise(id: string) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    if (!exercise) return;
+    const completed = completedExercises.includes(id);
+    const status: TrainingSessionItemStatus = completed ? "pending" : "completed";
+    setCompletedExercises((current) => completed ? current.filter((item) => item !== id) : [...current, id]);
+    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, executionStatus: status } : item));
+    try { await updateSessionExercise(exercise.sessionExerciseId, { status }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar o exercício."); }
   }
 
-  function changeSessionSeries(id: string, direction: -1 | 1) {
-    setSessionExercises((current) => current.map((exercise) => {
-      if (exercise.id !== id) return exercise;
-      const configurations = seriesConfigurations(exercise);
-      if (direction === -1 && configurations.length === 1) return exercise;
-      const nextConfigurations = direction === 1
-        ? [...configurations, { method: "Convencional" as const, reps: "10", load: configurations.at(-1)?.load ?? exercise.load }]
-        : configurations.slice(0, -1);
-      return { ...exercise, changed: true, sets: nextConfigurations.length, seriesConfigurations: nextConfigurations, prescription: formatSeriesPrescription(nextConfigurations) };
-    }));
+  async function updateSessionExerciseStatus(id: string, status: TrainingSessionItemStatus) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    if (!exercise) return;
+    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, executionStatus: status } : item));
+    setCompletedExercises((current) => status === "completed"
+      ? current.includes(id) ? current : [...current, id]
+      : current.filter((item) => item !== id));
+    try { await updateSessionExercise(exercise.sessionExerciseId, { status }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar o estado do exercício."); }
   }
 
-  function updateSessionExercise(id: string, field: "name" | "load", value: string) {
+  async function changeSessionSeries(id: string, direction: -1 | 1) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    if (!exercise) return;
+    const configurations = seriesConfigurations(exercise).filter((item) => !item.isRemoved);
+    if (direction === -1 && configurations.length === 1) return;
+    try {
+      if (direction === 1) {
+        const previous = configurations.at(-1);
+        const newId = crypto.randomUUID();
+        await addSessionSet(exercise.sessionExerciseId, newId, {
+          planned_set_type: "working", planned_method: "conventional",
+          planned_reps_min: Number(previous?.reps.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 10),
+          planned_reps_max: Number(previous?.reps.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 10),
+          planned_load: Number(previous?.load.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0), planned_load_unit: "kg",
+        });
+        setSessionExercises((current) => current.map((item) => item.id === id ? {
+          ...item, changed: true, sets: configurations.length + 1,
+          seriesConfigurations: [...configurations, { id: newId, method: "Convencional", reps: "10", load: previous?.load ?? item.load, executionStatus: "pending" }],
+        } : item));
+      } else {
+        const removed = configurations.at(-1);
+        if (!removed?.id) return;
+        await removeSessionSet(removed.id);
+        setSessionExercises((current) => current.map((item) => item.id === id ? {
+          ...item, changed: true, sets: configurations.length - 1,
+          seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === removed.id ? { ...set, isRemoved: true, executionStatus: "skipped" } : set),
+        } : item));
+      }
+    } catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível alterar as séries."); }
+  }
+
+  async function updateSessionExerciseValue(id: string, field: "name" | "load", value: string) {
+    const currentExercise = sessionExercises.find((item) => item.id === id);
+    if (!currentExercise) return;
     setSessionExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
       const next = { ...exercise, [field]: value, changed: true };
@@ -376,9 +508,29 @@ function WorkoutsPageContent() {
       const configurations = seriesConfigurations(exercise).map((configuration) => ({ ...configuration, load: value }));
       return { ...next, seriesConfigurations: configurations };
     }));
+    try {
+      if (field === "name") {
+        const reference = exerciseCatalog.find((item) => item.name === value);
+        if (!reference) throw new Error("Exercício substituto não encontrado.");
+        await updateSessionExercise(currentExercise.sessionExerciseId, {
+          execution_source: "substituted", executed_exercise_source: reference.source,
+          executed_system_exercise_id: reference.source === "system" ? reference.id : null,
+          executed_custom_exercise_id: reference.source === "custom" ? reference.id : null,
+          executed_name_snapshot: reference.name, executed_metadata_snapshot: { muscles: reference.muscles },
+          muscle_participation_snapshot: reference.muscles,
+        });
+      } else {
+        await Promise.all((currentExercise.seriesConfigurations ?? []).filter((set) => set.id && !set.isRemoved).map((set) =>
+          updateSessionSet(set.id!, { actual_load: Number(value.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0), actual_load_unit: "kg" })));
+      }
+    } catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a alteração."); }
   }
 
-  function adjustSessionLoad(id: string, delta: -2.5 | 2.5, seriesIndex?: number) {
+  async function adjustSessionLoad(id: string, delta: -2.5 | 2.5, seriesIndex?: number) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    const targetSet = exercise?.seriesConfigurations?.[seriesIndex ?? 0];
+    if (!targetSet?.id) return;
+    const nextLoad = adjustedLoad(targetSet.load, delta);
     setSessionExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
       const configurations = seriesConfigurations(exercise).map((configuration, index) => {
@@ -388,9 +540,16 @@ function WorkoutsPageContent() {
       const load = configurations[0]?.load ?? adjustedLoad(exercise.load, delta);
       return { ...exercise, changed: true, load, seriesConfigurations: configurations };
     }));
+    try { await updateSessionSet(targetSet.id, { actual_load: Number(nextLoad.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 0), actual_load_unit: "kg" }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a carga."); }
   }
 
-  function adjustSessionRepetitions(id: string, delta: -1 | 1, seriesIndex: number) {
+  async function adjustSessionRepetitions(id: string, delta: -1 | 1, seriesIndex: number) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    if (!targetSet?.id) return;
+    const currentReps = Number(targetSet.reps.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 0);
+    const actualReps = Math.max(0, currentReps + delta);
     setSessionExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
       const configurations = seriesConfigurations(exercise).map((configuration, index) => {
@@ -400,6 +559,46 @@ function WorkoutsPageContent() {
       });
       return { ...exercise, changed: true, sets: configurations.length, reps: configurations.map((item) => item.reps).join("/"), seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
     }));
+    try { await updateSessionSet(targetSet.id, { actual_reps: actualReps }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar as repetições."); }
+  }
+
+  async function updateSessionSeriesStatus(id: string, seriesIndex: number, status: TrainingSessionItemStatus) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    if (!targetSet?.id) return;
+    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
+      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, executionStatus: status } : set),
+    } : item));
+    try { await updateSessionSet(targetSet.id, { status }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar o estado da série."); }
+  }
+
+  async function updateSessionSeriesEffort(id: string, seriesIndex: number, field: "actual_rir" | "actual_rpe", value: string) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    if (!targetSet?.id) return;
+    const parsed = value === "" ? null : Number(value.replace(",", "."));
+    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
+      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, [field === "actual_rir" ? "actualRir" : "actualRpe"]: parsed } : set),
+    } : item));
+    try { await updateSessionSet(targetSet.id, { [field]: parsed }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar RIR/RPE."); }
+  }
+
+  async function updateSessionExerciseNotes(id: string, notes: string) {
+    const exercise = sessionExercises.find((item) => item.id === id);
+    if (!exercise) return;
+    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, notes, changed: true } : item));
+    try { await updateSessionExercise(exercise.sessionExerciseId, { notes }); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a observação."); }
+  }
+
+  async function updateActiveSessionNotes(notes: string) {
+    if (!activeSessionRecord) return;
+    setActiveSessionRecord({ ...activeSessionRecord, notes });
+    try { await updateSessionNotes(activeSessionRecord.id, notes); }
+    catch (error) { setPersistenceError(error instanceof Error ? error.message : "Não foi possível salvar a observação."); }
   }
 
   function compatibleExerciseNames(exercise: Exercise) {
@@ -565,9 +764,13 @@ function WorkoutsPageContent() {
       setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises }));
     }
     const protocol = protocols.find((item) => item.id === protocolId);
-    const workout = protocol?.workouts.find((item) => item.id === workoutId);
-    if (!workout) return;
-    setPrescriptionEditor({ protocolId, periodId: protocol?.activePeriodId ?? "", workoutId });
+    const period = protocol?.periods.find((item) => item.id === prescriptionEditor?.periodId);
+    const workout = period?.workouts.find((item) => item.id === workoutId);
+    if (!protocol || !period || !workout) {
+      setPersistenceError("O treino selecionado não pertence ao protocolo e período abertos.");
+      return;
+    }
+    setPrescriptionEditor({ protocolId, periodId: period.id, workoutId });
     setDraftExercises((workoutDrafts[workoutId] ?? workout.exercises).map((exercise) => ({ ...exercise })));
     setExpandedEditorExercise(null);
   }
@@ -602,48 +805,31 @@ function WorkoutsPageContent() {
   }
 
   function finishSession() {
-    if (!activeSession) return;
-    if (completedExercises.length < sessionExercises.length) {
-      setIncompleteFinishOpen(true);
-      return;
-    }
-    continueFinishingSession();
-  }
-
-  function continueFinishingSession() {
-    if (!activeSession) return;
-    if (sessionExercises.some((exercise) => exercise.changed)) {
-      setFinishChoiceOpen(true);
-      return;
-    }
-    completeSession(false);
+    if (!activeSessionRecord) return;
+    setIncompleteFinishOpen(true);
   }
 
   function finishAndCompleteAll() {
-    setCompletedExercises(sessionExercises.map((exercise) => exercise.id));
-    setIncompleteFinishOpen(false);
-    continueFinishingSession();
+    void completeSession("assume_unmodified_as_planned");
   }
 
   function finishPartially() {
-    setIncompleteFinishOpen(false);
-    continueFinishingSession();
+    void completeSession("partial");
   }
 
-  function completeSession(updatePrescription: boolean) {
-    if (!activeSession) return;
-    const executedExercises: Exercise[] = sessionExercises.map(({ originalExerciseId: _originalExerciseId, changed: _changed, ...exercise }) => {
-      void _originalExerciseId;
-      void _changed;
-      return exercise;
-    });
-    setProtocols((current) => current.map((protocol) => protocol.id === activeSession.protocol.id
-      ? { ...protocol, workouts: protocol.workouts.map((workout) => workout.id === activeSession.workout.id ? { ...workout, exercises: updatePrescription ? executedExercises : workout.exercises, volume: updatePrescription ? calculateWorkoutVolume(executedExercises, exerciseCatalog) : workout.volume, completedExecutions: (workout.completedExecutions ?? 0) + 1 } : workout) }
-      : protocol));
-    setFinishChoiceOpen(false);
-    setSessionExercises([]);
-    setActiveSession(null);
-    router.push("/");
+  async function completeSession(mode: TrainingSessionCompletionMode) {
+    if (!activeSessionRecord) return;
+    try {
+      await completeTrainingSession(activeSessionRecord.id, mode);
+      setIncompleteFinishOpen(false);
+      setSessionExercises([]);
+      setActiveSessionRecord(null);
+      setActiveSession(null);
+      sessionBootstrapRef.current = null;
+      router.push("/");
+    } catch (error) {
+      setPersistenceError(error instanceof Error ? error.message : "Não foi possível concluir a sessão.");
+    }
   }
 
   function deleteWorkoutFromEditor(protocol: Protocol, workoutId: string) {
@@ -837,7 +1023,7 @@ function WorkoutsPageContent() {
   return (
     <MainLayout>
       <div className="space-y-7">
-        <PageHeader title="Treinos" description="Crie protocolos, prescreva treinos e acompanhe cada sessão." action={<Button onClick={() => setNewProtocolOpen(true)}>＋ Novo protocolo</Button>} />
+        <PageHeader title="Treinos" description="Crie protocolos, prescreva treinos e acompanhe cada sessão." action={<Button onClick={() => { setNewProtocolStudentId(""); setNewProtocolOpen(true); }}>＋ Novo protocolo</Button>} />
         {persistenceError && <Card className="border-red-500/30 bg-red-500/5 text-sm text-red-600">{persistenceError}</Card>}
         {loading && <Card className="text-sm text-[var(--muted)]">Carregando alunos e prescrições...</Card>}
 
@@ -872,7 +1058,7 @@ function WorkoutsPageContent() {
         </section>
       </div>
 
-      {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Crie um planejamento independente. Depois, você poderá periodizá-lo internamente.</p></div><button type="button" onClick={() => setNewProtocolOpen(false)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select name="student" defaultValue={searchParams.get("novoProtocolo") ?? students[0]?.id} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{students.map((student) => <option key={student.id} value={student.id}>{student.fullName}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Nome do protocolo<input name="name" required placeholder="Ex.: Hipertrofia — segundo semestre" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setNewProtocolOpen(false)}>Cancelar</Button><Button type="submit">Criar protocolo</Button></div></form></div>}
+      {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Crie um planejamento independente. Depois, você poderá periodizá-lo internamente.</p></div><button type="button" onClick={() => { setNewProtocolOpen(false); setNewProtocolStudentId(""); }} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select required name="student" value={newProtocolStudentId} onChange={(event) => setNewProtocolStudentId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option value="" disabled>Selecione o aluno</option>{students.map((student) => <option key={student.id} value={student.id}>{student.fullName}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Nome do protocolo<input name="name" required placeholder="Ex.: Hipertrofia — segundo semestre" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => { setNewProtocolOpen(false); setNewProtocolStudentId(""); }}>Cancelar</Button><Button type="submit">Criar protocolo</Button></div></form></div>}
 
       {prescriptionEditor && (() => {
         const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);
@@ -1025,11 +1211,10 @@ function WorkoutsPageContent() {
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
-      {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExercise} onFinish={finishSession} />}
+      {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} sessionNotes={activeSessionRecord?.notes} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onUpdateExerciseStatus={updateSessionExerciseStatus} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onUpdateSeriesStatus={updateSessionSeriesStatus} onUpdateSeriesEffort={updateSessionSeriesEffort} onUpdateExerciseNotes={updateSessionExerciseNotes} onUpdateSessionNotes={updateActiveSessionNotes} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExerciseValue} onFinish={finishSession} />}
 
-      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Finalizar a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Ainda existem {sessionExercises.length - completedExercises.length} exercícios não concluídos. Você deseja marcá-los como concluídos antes de finalizar?</p><div className="mt-6 space-y-2"><Button className="w-full" onClick={finishAndCompleteAll}>Concluir todos e finalizar</Button><Button variant="secondary" className="w-full" onClick={finishPartially}>Finalizar parcialmente</Button><Button variant="ghost" className="w-full" onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
+      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Como concluir a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">No modo conforme planejado, itens não alterados e não pulados serão registrados como execução presumida. Faixas de repetições permanecem como faixas, sem inventar um valor exato.</p><div className="mt-6 space-y-2"><Button className="w-full" onClick={finishAndCompleteAll}>Executado conforme planejado</Button><Button variant="secondary" className="w-full" onClick={finishPartially}>Concluir somente o confirmado</Button><Button variant="ghost" className="w-full" onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
 
-      {finishChoiceOpen && activeSession && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="finish-choice-title"><Card className="max-h-[90vh] w-full max-w-md overflow-y-auto"><div className="grid size-12 place-items-center rounded-2xl bg-amber-500/10 text-xl text-amber-600">↻</div><h2 id="finish-choice-title" className="mt-4 text-xl font-semibold">Como deseja salvar as alterações?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Você alterou séries, carga ou exercício durante esta sessão. Escolha se essas mudanças valerão apenas hoje ou também para as próximas sessões.</p>{weeklyVolumeImpact.length > 0 && <div className="mt-4 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4"><p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Impacto no volume semanal estimado</p><p className="mt-1 text-xs leading-5 text-[var(--muted)]">Considerando a frequência atual de {activeSession.protocol.frequency} treinos por semana.</p><div className="mt-3 space-y-2">{weeklyVolumeImpact.map((impact) => <div key={impact.muscle} className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface)] px-3 py-2"><div><p className="text-sm font-medium">{impact.muscle}</p><p className="text-xs text-[var(--muted)]">{formatWeeklySets(impact.before)} → {formatWeeklySets(impact.after)} séries/semana</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${impact.difference < 0 ? "bg-rose-500/10 text-rose-600 dark:text-rose-300" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"}`}>{impact.difference > 0 ? "+" : ""}{formatWeeklySets(impact.difference)}</span></div>)}</div></div>}<div className="mt-6 space-y-2"><Button className="w-full" onClick={() => completeSession(false)}>Somente nesta sessão</Button><Button variant="secondary" className="w-full" onClick={() => completeSession(true)}>Atualizar próximos treinos</Button><Button variant="ghost" className="w-full" onClick={() => setFinishChoiceOpen(false)}>Voltar à sessão</Button></div></Card></div>}
     </MainLayout>
   );
 }

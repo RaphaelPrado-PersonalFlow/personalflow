@@ -21,9 +21,18 @@ export default function OpenProtocolPage({ params }: Props) {
   const [protocol, setProtocol] = useState<Protocol | null>(null);
   const [expandedWorkouts, setExpandedWorkouts] = useState<string[]>([]);
   const [activePeriod, setActivePeriod] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [loadedContext, setLoadedContext] = useState("");
   const [volumeMetric, setVolumeMetric] = useState<VolumeMetric>("series");
-  useEffect(() => { Promise.all([getTrainingProtocol(protocolId), exerciseRepository.listCustom()]).then(([row, customExercises]) => {
-    if (row.studentId !== studentId) return;
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getTrainingProtocol(protocolId), exerciseRepository.listCustom()]).then(([row, customExercises]) => {
+    if (cancelled) return;
+    if (row.studentId !== studentId) {
+      setLoadError("Este protocolo não pertence ao aluno informado na URL.");
+      setLoadedContext(`${studentId}:${protocolId}`);
+      return;
+    }
     const fullCatalog: ExerciseCatalogReference[] = [...customExercises.map((exercise) => ({ id: exercise.id, source: "custom" as const, name: exercise.name, aliases: exercise.aliases, muscles: exercise.muscles })), ...systemExerciseReferences()];
     const periods = row.periods.map((period) => ({ ...period, workouts: period.workouts.map((workout) => ({ ...workout, volume: workout.exercises.reduce<{ muscle: string; sets: number }[]>((totals, exercise) => {
       const reference = fullCatalog.find((item) => item.name === exercise.name);
@@ -31,12 +40,18 @@ export default function OpenProtocolPage({ params }: Props) {
     }, []) })) }));
     const current = periods.find((item) => item.id === row.activePeriodId) ?? periods[0];
     setProtocol({ ...row, periods, workouts: current?.workouts ?? [] }); setActivePeriod(current?.id ?? "");
-  }); }, [protocolId, studentId]);
+    setLoadError("");
+    setLoadedContext(`${studentId}:${protocolId}`);
+  }).catch(() => { if (!cancelled) { setLoadError("Não foi possível carregar este protocolo."); setLoadedContext(`${studentId}:${protocolId}`); } });
+    return () => { cancelled = true; };
+  }, [protocolId, studentId]);
 
   const selectedPeriod = protocol?.periods.find((item) => item.id === activePeriod);
   const workouts = useMemo(() => selectedPeriod?.workouts ?? [], [selectedPeriod]);
   const macroVolume = useMemo(() => volumeByMuscle(workouts, volumeMetric), [volumeMetric, workouts]);
-  const editorUrl = (workoutId?: string) => `/treinos?editarProtocolo=${protocolId}&periodo=${activePeriod}${workoutId ? `&editarTreino=${workoutId}` : ""}`;
+  const editorUrl = (workoutId?: string) => `/treinos?aluno=${studentId}&editarProtocolo=${protocolId}&periodo=${activePeriod}${workoutId ? `&editarTreino=${workoutId}` : ""}`;
+  if (loadedContext !== `${studentId}:${protocolId}`) return <MainLayout><Card>Carregando protocolo...</Card></MainLayout>;
+  if (loadError) return <MainLayout><Card className="p-8 text-center"><p className="font-semibold">Contexto de treino inválido</p><p className="mt-2 text-sm text-red-500">{loadError}</p><Button className="mt-5" onClick={() => router.push(`/treinos/${studentId}`)}>Voltar aos protocolos</Button></Card></MainLayout>;
   if (!protocol) return <MainLayout><Card>Carregando protocolo...</Card></MainLayout>;
 
   return <MainLayout><div className="space-y-6">

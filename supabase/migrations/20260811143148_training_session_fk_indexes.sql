@@ -1,0 +1,15 @@
+create index training_sessions_student_owner_fk_idx on public.training_sessions(student_id, professional_id);
+create index training_sessions_protocol_owner_fk_idx on public.training_sessions(protocol_id, professional_id);
+create index training_sessions_period_owner_fk_idx on public.training_sessions(period_id, professional_id);
+create index training_sessions_workout_owner_fk_idx on public.training_sessions(workout_id, professional_id);
+create index training_sessions_responsible_professional_idx on public.training_sessions(responsible_professional_id);
+create index training_session_exercises_owner_idx on public.training_session_exercises(professional_id);
+create index training_session_exercises_session_owner_fk_idx on public.training_session_exercises(session_id, professional_id);
+create index training_session_exercises_prescribed_owner_fk_idx
+  on public.training_session_exercises(prescribed_workout_exercise_id, professional_id)
+  where prescribed_workout_exercise_id is not null;
+create index training_session_sets_owner_idx on public.training_session_sets(professional_id);
+create index training_session_sets_exercise_owner_fk_idx on public.training_session_sets(session_exercise_id, professional_id);
+create index training_session_sets_prescribed_owner_fk_idx
+  on public.training_session_sets(prescribed_set_id, professional_id)
+  where prescribed_set_id is not null;

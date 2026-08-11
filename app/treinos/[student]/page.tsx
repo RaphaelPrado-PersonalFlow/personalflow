@@ -23,14 +23,19 @@ export default function StudentProtocolsPage({ params }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [reordering, setReordering] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadedStudentId, setLoadedStudentId] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([listTrainingStudents(), listTrainingProtocols()])
       .then(([students, rows]) => {
+        if (cancelled) return;
         setStudent(students.find((item) => item.id === studentId) ?? null);
         setProtocols(rows.filter((item) => item.studentId === studentId));
+        setLoadedStudentId(studentId);
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [studentId]);
 
   async function confirmProtocolDeletion() {
@@ -66,14 +71,14 @@ export default function StudentProtocolsPage({ params }: Props) {
     }
   }
 
-  if (loading) return <MainLayout><Card>Carregando protocolos...</Card></MainLayout>;
+  if (loading || loadedStudentId !== studentId) return <MainLayout><Card>Carregando protocolos...</Card></MainLayout>;
   if (!student) return <MainLayout><Card className="p-8 text-center"><h1 className="text-xl font-semibold">Aluno não encontrado</h1><Button className="mt-5" onClick={() => router.push("/treinos")}>Voltar para treinos</Button></Card></MainLayout>;
 
   return <MainLayout><div className="space-y-6">
     <PageHeader
       title={student.fullName}
       description={student.goal || "Protocolos e prescrições"}
-      action={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => router.push("/treinos")}>← Todos os alunos</Button><Button onClick={() => router.push(`/treinos?novoProtocolo=${student.id}`)}>＋ Adicionar protocolo</Button></div>}
+      action={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => router.push("/treinos")}>← Todos os alunos</Button><Button onClick={() => router.push(`/treinos?aluno=${student.id}&novoProtocolo=${student.id}`)}>＋ Adicionar protocolo</Button></div>}
     />
     <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Protocolos do aluno</p><h2 className="mt-1 text-xl font-semibold">{protocols.length} {protocols.length === 1 ? "protocolo cadastrado" : "protocolos cadastrados"}</h2></div>
     <section className="space-y-3">
@@ -81,7 +86,7 @@ export default function StudentProtocolsPage({ params }: Props) {
         const expanded = expandedProtocols.includes(protocol.id);
         const period = protocol.periods.find((item) => item.id === protocol.activePeriodId) ?? protocol.periods[0];
         const workout = period?.workouts[0];
-        const editorUrl = `/treinos?editarProtocolo=${protocol.id}${period ? `&periodo=${period.id}` : ""}${workout ? `&editarTreino=${workout.id}` : ""}`;
+        const editorUrl = `/treinos?aluno=${student.id}&editarProtocolo=${protocol.id}${period ? `&periodo=${period.id}` : ""}${workout ? `&editarTreino=${workout.id}` : ""}`;
         return <Card key={protocol.id} className="overflow-hidden p-0">
           <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:p-5">
             <button type="button" onClick={() => setExpandedProtocols((current) => current.includes(protocol.id) ? current.filter((id) => id !== protocol.id) : [...current, protocol.id])} className="flex min-w-0 flex-1 items-center gap-3 text-left">

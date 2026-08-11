@@ -52,7 +52,7 @@ export default function Home() {
   };
 
   const startWorkout = (protocol: Protocol, workout: Workout) => {
-    router.push(`/treinos?protocolo=${protocol.id}&treinoId=${workout.id}`);
+    router.push(`/treinos?aluno=${protocol.studentId}&protocolo=${protocol.id}&treinoId=${workout.id}`);
   };
 
   return (

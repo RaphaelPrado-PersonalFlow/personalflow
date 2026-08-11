@@ -15,6 +15,11 @@ export type SeriesConfiguration = {
   reps: string;
   load: string;
   blocks?: number[];
+  executionStatus?: "pending" | "completed" | "assumed_completed" | "partial" | "skipped";
+  actualRir?: number | null;
+  actualRpe?: number | null;
+  notes?: string | null;
+  isRemoved?: boolean;
 };
 
 export type PrescribedExercise = {
