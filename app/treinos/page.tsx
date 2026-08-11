@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import MainLayout from "@/components/layout/MainLayout";
@@ -210,7 +210,7 @@ function WorkoutsPageContent() {
   const [finishChoiceOpen, setFinishChoiceOpen] = useState(false);
   const [workoutToEdit, setWorkoutToEdit] = useState<{ protocolId: string; workout: Workout } | null>(null);
   const [workoutToRemove, setWorkoutToRemove] = useState<{ protocolId: string; workout: Workout } | null>(null);
-  const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: string; workoutId: string } | null>(null);
+  const [prescriptionEditor, setPrescriptionEditor] = useState<{ protocolId: string; periodId: string; workoutId: string } | null>(null);
   const [draftExercises, setDraftExercises] = useState<Exercise[]>([]);
   const [workoutDrafts, setWorkoutDrafts] = useState<Record<string, Exercise[]>>({});
   const [exerciseToAdd, setExerciseToAdd] = useState("");
@@ -227,6 +227,7 @@ function WorkoutsPageContent() {
   const [periodizationOpen, setPeriodizationOpen] = useState(false);
   const [periodizationCount, setPeriodizationCount] = useState(1);
   const [periodizationWeeks, setPeriodizationWeeks] = useState(1);
+  const initializedEditorQuery = useRef("");
 
   useEffect(() => {
     Promise.all([exerciseRepository.listCustom(), listTrainingStudents(), listTrainingProtocols()])
@@ -275,13 +276,25 @@ function WorkoutsPageContent() {
       const newProtocolStudent = searchParams.get("novoProtocolo");
       if (newProtocolStudent) setNewProtocolOpen(true);
       const protocolId = searchParams.get("editarProtocolo");
+      const periodId = searchParams.get("periodo");
       const workoutId = searchParams.get("editarTreino");
-      if (!protocolId || !workoutId) return;
+      if (!protocolId) { initializedEditorQuery.current = ""; return; }
+      const queryKey = `${protocolId}:${periodId ?? ""}:${workoutId ?? ""}`;
+      if (initializedEditorQuery.current === queryKey) return;
       const protocol = protocols.find((item) => item.id === protocolId);
-      const workout = protocol?.workouts.find((item) => item.id === workoutId);
-      if (!protocol || !workout) return;
-      setPrescriptionEditor({ protocolId, workoutId });
-      setWorkoutDrafts(Object.fromEntries(protocol.workouts.map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
+      if (!protocol) return;
+      const selectedPeriod = protocol.periods.find((item) => item.id === periodId)
+        ?? protocol.periods.find((item) => item.id === protocol.activePeriodId)
+        ?? protocol.periods[0];
+      if (!selectedPeriod) return;
+      const existingWorkout = selectedPeriod.workouts.find((item) => item.id === workoutId) ?? selectedPeriod.workouts[0];
+      const workout = existingWorkout ?? createEmptyWorkout(selectedPeriod.id, 0);
+      const periodWorkouts = existingWorkout ? selectedPeriod.workouts : [workout];
+      const editingProtocol = activatePeriod(protocol, selectedPeriod.id, periodWorkouts);
+      initializedEditorQuery.current = queryKey;
+      setProtocols((current) => current.map((item) => item.id === protocolId ? editingProtocol : item));
+      setPrescriptionEditor({ protocolId, periodId: selectedPeriod.id, workoutId: workout.id });
+      setWorkoutDrafts(Object.fromEntries(periodWorkouts.map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
       setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
       if (searchParams.get("periodizar") === "1") setPeriodizationOpen(true);
     }, 0);
@@ -431,12 +444,38 @@ function WorkoutsPageContent() {
       .catch((error: unknown) => setPersistenceError(error instanceof Error ? error.message : "Não foi possível duplicar o protocolo."));
   }
 
-  function updateProtocolDetails(protocolId: string, field: "name" | "start" | "end", value: string) {
+  function updateProtocolDetails(protocolId: string, field: "name" | "objective" | "frequency" | "start" | "end", value: string | number) {
     setProtocols((current) => current.map((item) => item.id === protocolId ? {
       ...item,
       [field]: value,
-      periods: item.periods.map((period) => period.id === item.activePeriodId ? { ...period, [field]: value } : period),
     } : item));
+  }
+
+  function updatePeriodDetails(protocolId: string, periodId: string, field: "name" | "start" | "end" | "status", value: string) {
+    setProtocols((current) => current.map((item) => item.id === protocolId ? {
+      ...item,
+      periods: item.periods.map((period) => period.id === periodId ? { ...period, [field]: value } : period),
+    } : item));
+  }
+
+  function createEmptyWorkout(periodId: string, index: number): Workout {
+    return {
+      id: crypto.randomUUID(), periodId, lineageId: crypto.randomUUID(), version: 1, isCurrent: true,
+      publishedAt: null, name: `Treino ${String.fromCharCode(65 + index)}`, focus: "Definir foco",
+      duration: 0, exercises: [], volume: [],
+    };
+  }
+
+  function activatePeriod(protocol: Protocol, periodId: string, workouts?: Workout[]): Protocol {
+    const period = protocol.periods.find((item) => item.id === periodId) ?? protocol.periods[0];
+    if (!period) return protocol;
+    const selectedWorkouts = workouts ?? period.workouts;
+    return {
+      ...protocol,
+      activePeriodId: period.id,
+      workouts: selectedWorkouts,
+      periods: protocol.periods.map((item) => item.id === period.id ? { ...item, workouts: selectedWorkouts } : item),
+    };
   }
 
   function createPeriodization(protocol: Protocol) {
@@ -452,7 +491,7 @@ function WorkoutsPageContent() {
       workouts: selected.workouts, name: selected.name, start: selected.start, end: selected.end,
     } : item));
     if (selected.workouts[0]) {
-      setPrescriptionEditor({ protocolId: protocol.id, workoutId: selected.workouts[0].id });
+      setPrescriptionEditor({ protocolId: protocol.id, periodId: selected.id, workoutId: selected.workouts[0].id });
       setDraftExercises(selected.workouts[0].exercises.map((exercise) => ({ ...exercise })));
       setWorkoutDrafts(Object.fromEntries(selected.workouts.map((workout) => [workout.id, workout.exercises])));
     }
@@ -492,21 +531,56 @@ function WorkoutsPageContent() {
 
   function openPrescriptionEditor(protocolId: string, workout: Workout) {
     const protocol = protocols.find((item) => item.id === protocolId);
-    setPrescriptionEditor({ protocolId, workoutId: workout.id });
+    if (!protocol) return;
+    const period = protocol.periods.find((item) => item.id === workout.periodId)
+      ?? protocol.periods.find((item) => item.workouts.some((entry) => entry.id === workout.id));
+    if (!period) return;
+    const editingProtocol = activatePeriod(protocol, period.id);
+    setProtocols((current) => current.map((item) => item.id === protocolId ? editingProtocol : item));
+    setPrescriptionEditor({ protocolId, periodId: period.id, workoutId: workout.id });
     setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
-    setWorkoutDrafts(Object.fromEntries((protocol?.workouts ?? []).map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
+    setWorkoutDrafts(Object.fromEntries(period.workouts.map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
     setExpandedEditorExercise(null);
     setEditingWorkoutDetails(null);
     setVolumeView(null);
+  }
+
+  function openPeriodEditor(protocolId: string, periodId: string, preferredWorkoutId?: string) {
+    const protocol = protocols.find((item) => item.id === protocolId);
+    const period = protocol?.periods.find((item) => item.id === periodId);
+    if (!protocol || !period) return;
+    const existingWorkout = period.workouts.find((item) => item.id === preferredWorkoutId) ?? period.workouts[0];
+    const workout = existingWorkout ?? createEmptyWorkout(period.id, 0);
+    const periodWorkouts = existingWorkout ? period.workouts : [workout];
+    const currentProtocol = prescriptionEditor?.protocolId === protocolId
+      ? protocols.find((item) => item.id === protocolId)
+      : undefined;
+    const preservedPeriods = currentProtocol && prescriptionEditor
+      ? currentProtocol.periods.map((item) => item.id === prescriptionEditor.periodId
+        ? { ...item, workouts: currentProtocol.workouts.map((entry) => ({
+          ...entry,
+          exercises: entry.id === prescriptionEditor.workoutId ? draftExercises : (workoutDrafts[entry.id] ?? entry.exercises),
+        })) }
+        : item)
+      : protocol.periods;
+    const base = { ...protocol, periods: preservedPeriods };
+    const editingProtocol = activatePeriod(base, period.id, periodWorkouts);
+    setProtocols((current) => current.map((item) => item.id === protocolId ? editingProtocol : item));
+    setPrescriptionEditor({ protocolId, periodId: period.id, workoutId: workout.id });
+    setWorkoutDrafts(Object.fromEntries(periodWorkouts.map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
+    setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
+    setExpandedEditorExercise(null);
+    setEditingWorkoutDetails(existingWorkout ? null : workout.id);
   }
 
   function selectEditorWorkout(protocolId: string, workoutId: string) {
     if (prescriptionEditor) {
       setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises }));
     }
-    const workout = protocols.find((protocol) => protocol.id === protocolId)?.workouts.find((item) => item.id === workoutId);
+    const protocol = protocols.find((item) => item.id === protocolId);
+    const workout = protocol?.workouts.find((item) => item.id === workoutId);
     if (!workout) return;
-    setPrescriptionEditor({ protocolId, workoutId });
+    setPrescriptionEditor({ protocolId, periodId: protocol?.activePeriodId ?? "", workoutId });
     setDraftExercises((workoutDrafts[workoutId] ?? workout.exercises).map((exercise) => ({ ...exercise })));
     setExpandedEditorExercise(null);
   }
@@ -523,7 +597,7 @@ function WorkoutsPageContent() {
     const workout: Workout = { id, periodId: protocol.activePeriodId, lineageId: crypto.randomUUID(), version: 1, isCurrent: true, publishedAt: null, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 0, exercises: [], volume: [] };
     setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises, [id]: [] }));
     setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, workout] } : item));
-    setPrescriptionEditor({ protocolId: protocol.id, workoutId: id });
+    setPrescriptionEditor({ protocolId: protocol.id, periodId: protocol.activePeriodId, workoutId: id });
     setDraftExercises([]);
     setExpandedEditorExercise(null);
     setEditingWorkoutDetails(id);
@@ -535,7 +609,7 @@ function WorkoutsPageContent() {
     const copy = copyWorkout({ ...workout, exercises: sourceExercises, duration: estimatedWorkoutDuration(sourceExercises) });
     setWorkoutDrafts((current) => ({ ...current, [prescriptionEditor.workoutId]: draftExercises, [copy.id]: copy.exercises }));
     setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, copy] } : item));
-    setPrescriptionEditor({ protocolId: protocol.id, workoutId: copy.id });
+    setPrescriptionEditor({ protocolId: protocol.id, periodId: protocol.activePeriodId, workoutId: copy.id });
     setDraftExercises(copy.exercises);
     setExpandedEditorExercise(null);
   }
@@ -596,7 +670,7 @@ function WorkoutsPageContent() {
     });
     if (prescriptionEditor?.workoutId === workoutId) {
       const nextWorkout = remaining[0];
-      setPrescriptionEditor({ protocolId: protocol.id, workoutId: nextWorkout.id });
+      setPrescriptionEditor({ protocolId: protocol.id, periodId: protocol.activePeriodId, workoutId: nextWorkout.id });
       setDraftExercises((workoutDrafts[nextWorkout.id] ?? nextWorkout.exercises).map((exercise) => ({ ...exercise })));
     }
     setExpandedEditorExercise(null);
@@ -775,7 +849,7 @@ function WorkoutsPageContent() {
     const workout: Workout = { id, periodId: protocol.activePeriodId, lineageId: crypto.randomUUID(), version: 1, isCurrent: true, publishedAt: null, name: `Treino ${String.fromCharCode(65 + protocol.workouts.length)}`, focus: "Definir foco", duration: 0, exercises: [], volume: [] };
     setProtocols((current) => current.map((item) => item.id === protocol.id ? { ...item, workouts: [...item.workouts, workout] } : item));
     setExpandedWorkouts((current) => [...current, id]);
-    setPrescriptionEditor({ protocolId: protocol.id, workoutId: id });
+    setPrescriptionEditor({ protocolId: protocol.id, periodId: protocol.activePeriodId, workoutId: id });
     setDraftExercises([]);
   }
 
@@ -870,8 +944,11 @@ function WorkoutsPageContent() {
               <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor de prescrição</p><h2 id="prescription-board-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.name ?? protocol.objective} · {protocol.frequency}× por semana</p></div>
               <div className="flex flex-wrap items-stretch justify-end gap-2"><Button variant="secondary" onClick={() => setPeriodizationOpen(true)}>Periodizar</Button><VolumeMetricToggle metric={volumeMetric} onChange={setVolumeMetric} /><button type="button" onClick={(event) => { event.stopPropagation(); setVolumeView({ scope: "protocol" }); }} className="min-w-0 flex-1 rounded-xl border border-blue-600 bg-blue-600 px-3 py-2 text-left text-xs text-white shadow-lg shadow-blue-600/20 sm:flex-none"><strong className="block text-sm">{formatVolumeValue(protocolTotal, volumeMetric)} · {protocolVolume.length} grupos</strong><span>Revisar volume semanal</span></button><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div>
             </header>
-            <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3 sm:px-6">{protocols.filter((item) => item.student === protocol.student).map((item, index) => <button key={item.id} type="button" onClick={() => item.workouts[0] && openPrescriptionEditor(item.id, item.workouts[0])} className={`shrink-0 rounded-xl border px-4 py-2 text-left text-xs ${item.id === protocol.id ? "border-blue-500 bg-blue-500/10 text-blue-500" : "border-[var(--border)] bg-[var(--surface)]"}`}><strong className="block">{item.name ?? `Protocolo ${index + 1}`}</strong><span className="mt-0.5 block text-[10px] text-[var(--muted)]">{item.start} · {item.end}</span></button>)}</div>
-            <div className="grid shrink-0 gap-3 border-b border-[var(--border)] px-4 py-3 sm:grid-cols-3 sm:px-6"><label className="text-xs text-[var(--muted)]">Nome do protocolo ou período<input value={protocol.name ?? protocol.objective} onChange={(event) => updateProtocolDetails(protocol.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={protocol.start} onChange={(event) => updateProtocolDetails(protocol.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término ou duração<input value={protocol.end} onChange={(event) => updateProtocolDetails(protocol.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label></div>
+            <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3 sm:px-6">{protocol.periods.map((period, index) => <button key={period.id} type="button" onClick={() => openPeriodEditor(protocol.id, period.id)} className={`shrink-0 rounded-xl border px-4 py-2 text-left text-xs ${period.id === protocol.activePeriodId ? "border-blue-500 bg-blue-500/10 text-blue-500" : "border-[var(--border)] bg-[var(--surface)]"}`}><strong className="block">{period.name || `Período ${index + 1}`}</strong><span className="mt-0.5 block text-[10px] text-[var(--muted)]">{period.start} · {period.end}</span></button>)}</div>
+            <div className="shrink-0 space-y-3 border-b border-[var(--border)] px-4 py-3 sm:px-6">
+              <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Dados gerais do protocolo</p><div className="mt-2 grid gap-3 sm:grid-cols-5"><label className="text-xs text-[var(--muted)]">Nome<input value={protocol.name ?? ""} onChange={(event) => updateProtocolDetails(protocol.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Objetivo<input value={protocol.objective} onChange={(event) => updateProtocolDetails(protocol.id, "objective", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Frequência<input type="number" min="1" max="7" value={protocol.frequency} onChange={(event) => updateProtocolDetails(protocol.id, "frequency", Math.max(1, Number(event.target.value)))} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={protocol.start} onChange={(event) => updateProtocolDetails(protocol.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término<input value={protocol.end} onChange={(event) => updateProtocolDetails(protocol.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label></div></div>
+              {(() => { const period = protocol.periods.find((item) => item.id === protocol.activePeriodId); if (!period) return null; return <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Período selecionado</p><div className="mt-2 grid gap-3 sm:grid-cols-4"><label className="text-xs text-[var(--muted)]">Nome<input value={period.name} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={period.start} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término<input value={period.end} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Status<select value={period.status} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "status", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"><option>Rascunho</option><option>Programado</option><option>Ativo</option><option>Concluído</option></select></label></div></div>; })()}
+            </div>
 
             <section className="min-h-0 flex-none overflow-visible p-4 sm:flex-1 sm:overflow-y-auto sm:p-6"><div className="mb-4"><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Clique em um exercício para abrir ou recolher seus campos de prescrição.</p></div>
               <div className="overflow-x-auto pb-2"><div className="grid auto-cols-[310px] grid-flow-col items-start gap-4 xl:auto-cols-[minmax(300px,1fr)]">
