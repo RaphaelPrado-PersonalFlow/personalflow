@@ -24,6 +24,7 @@ type Assessment = {
   id: string;
   studentId: string;
   student: string;
+  assessmentDate: string;
   date: string;
   type: "Inicial" | "Reavaliação";
   weight: number;
@@ -40,12 +41,32 @@ type Assessment = {
   photos?: string[];
 };
 
+function getTodayDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatAssessmentDate(date: string) {
+  const [year, month, day] = date.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function orderAssessments(assessments: Assessment[]) {
+  return [...assessments].sort((a, b) =>
+    b.assessmentDate.localeCompare(a.assessmentDate) || b.id.localeCompare(a.id),
+  );
+}
+
 function mapAssessment(record: AssessmentRecord): Assessment {
   return {
     id: record.id,
     studentId: record.student_id,
     student: record.students?.full_name ?? "Aluno",
-    date: new Date(`${record.assessment_date}T12:00:00`).toLocaleDateString("pt-BR"),
+    assessmentDate: record.assessment_date,
+    date: formatAssessmentDate(record.assessment_date),
     type: record.assessment_type === "initial" ? "Inicial" : "Reavaliação",
     weight: record.weight_kg,
     height: record.height_m,
@@ -93,7 +114,7 @@ export default function AssessmentsPage() {
     async function load() {
       try {
         const [studentRows, assessmentRows] = await Promise.all([listStudents(), listAssessments()]);
-        const mapped = assessmentRows.map(mapAssessment);
+        const mapped = orderAssessments(assessmentRows.map(mapAssessment));
         setStudents(studentRows);
         setAssessments(mapped);
         const requestedStudent = new URLSearchParams(window.location.search).get("aluno");
@@ -116,7 +137,7 @@ export default function AssessmentsPage() {
   }, []);
 
   const studentAssessments = useMemo(
-    () => assessments.filter((assessment) => assessment.studentId === selectedStudent),
+    () => orderAssessments(assessments.filter((assessment) => assessment.studentId === selectedStudent)),
     [assessments, selectedStudent],
   );
   const latest = studentAssessments[0];
@@ -126,6 +147,7 @@ export default function AssessmentsPage() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const studentId = String(data.get("student"));
+    const assessmentDate = String(data.get("assessmentDate"));
     const weight = Number(data.get("weight"));
     const heightCm = Number(data.get("height"));
     const age = Number(data.get("age"));
@@ -134,10 +156,11 @@ export default function AssessmentsPage() {
     const skinfolds = Object.fromEntries(skinfoldFields.map(([key]) => [key, Number(data.get(`skinfold-${key}`)) || 0]));
     const waist = circumferences.waist || circumferences.abdomen || 0;
     const bodyFat = calculateBodyFat({ sex, age, heightCm, protocol, circumferences, skinfolds });
-    if (!studentId || !weight || !heightCm || !age || bodyFat === null) return;
+    if (!studentId || !assessmentDate || assessmentDate > getTodayDate() || !weight || !heightCm || !age || bodyFat === null) return;
     const height = heightCm / 100;
     const input = {
       student_id: studentId,
+      assessment_date: assessmentDate,
       assessment_type: editingAssessment
         ? (editingAssessment.type === "Inicial" ? "initial" : "reassessment") as "initial" | "reassessment"
         : assessments.some((item) => item.studentId === studentId) ? "reassessment" as const : "initial" as const,
@@ -152,7 +175,6 @@ export default function AssessmentsPage() {
       notes: notes || null,
       circumferences,
       skinfolds,
-      ...(editingAssessment ? { assessment_date: editingAssessment.date.split("/").reverse().join("-") } : {}),
     };
 
     setSaving(true);
@@ -162,9 +184,9 @@ export default function AssessmentsPage() {
         ? await updateAssessment(editingAssessment.id, input)
         : await createAssessment(input);
       const saved = mapAssessment(record);
-      setAssessments((current) => editingAssessment
+      setAssessments((current) => orderAssessments(editingAssessment
         ? current.map((item) => item.id === saved.id ? saved : item)
-        : [saved, ...current]);
+        : [saved, ...current]));
       setSelectedStudent(studentId);
       setSelectedAssessmentIds((current) => editingAssessment
         ? current.includes(saved.id) ? current : [...current, saved.id]
@@ -362,6 +384,7 @@ export default function AssessmentsPage() {
                 <summary className="cursor-pointer font-semibold">1. Perfil e dados básicos</summary>
                 <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   <label className="block text-sm font-medium sm:col-span-2 lg:col-span-1">Aluno<select name="student" defaultValue={editingAssessment?.studentId ?? selectedStudent} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 outline-none focus:border-blue-500">{students.map((student) => <option key={student.id} value={student.id}>{student.full_name}</option>)}</select></label>
+                  <label className="block text-sm font-medium">Data da avaliação<input name="assessmentDate" required type="date" max={getTodayDate()} defaultValue={editingAssessment?.assessmentDate ?? getTodayDate()} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 outline-none focus:border-blue-500" /></label>
                   <label className="block text-sm font-medium">Sexo biológico<select name="sex" value={sex} onChange={(event) => { setSex(event.target.value as BiologicalSex); setCalculatedBodyFat(null); }} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 outline-none focus:border-blue-500"><option>Masculino</option><option>Feminino</option></select></label>
                   <label className="block text-sm font-medium">Idade<input name="age" required type="number" min="16" max="100" defaultValue={editingAssessment?.age} placeholder="35" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 outline-none focus:border-blue-500" /></label>
                   <label className="block text-sm font-medium">Peso (kg)<input name="weight" required type="number" step="0.1" min="20" defaultValue={editingAssessment?.weight} placeholder="80,0" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 outline-none focus:border-blue-500" /></label>

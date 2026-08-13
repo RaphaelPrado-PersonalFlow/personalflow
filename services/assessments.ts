@@ -21,15 +21,16 @@ export type AssessmentRecord = {
 
 export type CreateAssessmentInput = Omit<
   AssessmentRecord,
-  "id" | "students" | "assessment_date"
-> & { assessment_date?: string };
+  "id" | "students"
+>;
 
 export async function listAssessments() {
   const supabase = createClient();
   const { data, error } = await supabase
     .from("assessments")
     .select("*, students(full_name)")
-    .order("assessment_date", { ascending: false });
+    .order("assessment_date", { ascending: false })
+    .order("id", { ascending: false });
 
   if (error) throw error;
   return (data ?? []) as AssessmentRecord[];

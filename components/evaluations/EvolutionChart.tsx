@@ -2,6 +2,7 @@
 
 export type ChartAssessment = {
   id: string | number;
+  assessmentDate: string;
   date: string;
   weight: number;
   bodyFat: number;
@@ -20,17 +21,14 @@ export type ChartMetric = {
 
 type EvolutionChartProps = { assessments: ChartAssessment[]; metrics: ChartMetric[] };
 
-function parseDate(date: string) {
-  const [day, month, year] = date.split("/").map(Number);
-  return new Date(year, month - 1, day).getTime();
-}
-
 function formatValue(value: number, unit: string) {
   return `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ${unit}`;
 }
 
 export default function EvolutionChart({ assessments, metrics }: EvolutionChartProps) {
-  const ordered = [...assessments].sort((a, b) => parseDate(a.date) - parseDate(b.date));
+  const ordered = [...assessments].sort((a, b) =>
+    a.assessmentDate.localeCompare(b.assessmentDate) || String(a.id).localeCompare(String(b.id)),
+  );
   const width = 600, height = 300;
   const padding = { top: 42, right: 28, bottom: 48, left: 46 };
   const plotWidth = width - padding.left - padding.right;
