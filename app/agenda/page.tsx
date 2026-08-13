@@ -6,6 +6,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
+import type { AppointmentDeletionScope } from "@/services/appointments";
 import {
   AppointmentRecord,
   AppointmentStatus,
@@ -98,6 +99,8 @@ export default function AgendaPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<AppointmentRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const weekDays = useMemo(
     () =>
@@ -240,15 +243,35 @@ export default function AgendaPage() {
     setActionMenuId(null);
   }
 
-  async function deleteItem(item: AppointmentRecord) {
-    if (!window.confirm(`Excluir o atendimento de ${item.students?.full_name ?? "este aluno"}?`)) return;
+  function requestDeletion(item: AppointmentRecord) {
+    setActionMenuId(null);
+    if (item.recurrence_group_id) {
+      setDeleteTarget(item);
+      return;
+    }
+    if (window.confirm(`Excluir o atendimento de ${item.students?.full_name ?? "este aluno"}?`)) {
+      void deleteItem(item, "single");
+    }
+  }
+
+  async function deleteItem(item: AppointmentRecord, scope: AppointmentDeletionScope) {
+    setDeleting(true);
+    setFeedback("");
     try {
-      await deleteAppointment(item.id);
+      await deleteAppointment(item.id, scope);
+      setAppointments((current) => current.filter((appointment) => {
+        if (scope === "single") return appointment.id !== item.id;
+        if (scope === "series") return appointment.recurrence_group_id !== item.recurrence_group_id;
+        return appointment.recurrence_group_id !== item.recurrence_group_id
+          || new Date(appointment.starts_at).getTime() < new Date(item.starts_at).getTime();
+      }));
+      setDeleteTarget(null);
       await loadData();
     } catch {
       setFeedback("Não foi possível excluir o atendimento.");
+    } finally {
+      setDeleting(false);
     }
-    setActionMenuId(null);
   }
 
   const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
@@ -338,7 +361,7 @@ export default function AgendaPage() {
                         >
                           <button type="button" onClick={() => void cancelItem(item.id)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Cancelar</button>
                           <button type="button" onClick={() => void rescheduleItem(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-raised)]">Reagendar</button>
-                          <button type="button" onClick={() => void deleteItem(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10">Excluir</button>
+                          <button type="button" onClick={() => requestDeletion(item)} className="flex w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10">Excluir</button>
                         </div>
                       )}
                     </div>
@@ -406,6 +429,21 @@ export default function AgendaPage() {
             </div>
             <div className="mt-6 flex justify-end gap-3"><Button type="button" variant="ghost" onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving}>{saving ? "Salvando..." : "Salvar atendimento"}</Button></div>
           </form>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/75 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-recurring-title" onClick={() => !deleting && setDeleteTarget(null)}>
+          <Card className="w-full max-w-md" onClick={(event) => event.stopPropagation()}>
+            <h2 id="delete-recurring-title" className="text-xl font-semibold">Excluir agendamento recorrente</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">Escolha quais ocorrências de {deleteTarget.students?.full_name ?? "este aluno"} devem sair da agenda.</p>
+            <div className="mt-6 grid gap-2">
+              <button type="button" disabled={deleting} onClick={() => void deleteItem(deleteTarget, "single")} className="rounded-xl border border-[var(--border)] px-4 py-3 text-left text-sm font-semibold hover:bg-[var(--surface-raised)] disabled:opacity-60">Somente este</button>
+              <button type="button" disabled={deleting} onClick={() => void deleteItem(deleteTarget, "future")} className="rounded-xl border border-[var(--border)] px-4 py-3 text-left text-sm font-semibold hover:bg-[var(--surface-raised)] disabled:opacity-60">Este e os próximos</button>
+              <button type="button" disabled={deleting} onClick={() => void deleteItem(deleteTarget, "series")} className="rounded-xl border border-red-500/30 px-4 py-3 text-left text-sm font-semibold text-red-500 hover:bg-red-500/10 disabled:opacity-60">Toda a série</button>
+              <Button type="button" variant="ghost" disabled={deleting} onClick={() => setDeleteTarget(null)}>Cancelar</Button>
+            </div>
+          </Card>
         </div>
       )}
     </MainLayout>

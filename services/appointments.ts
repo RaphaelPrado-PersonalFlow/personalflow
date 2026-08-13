@@ -21,11 +21,14 @@ export type AppointmentRecord = {
   recurrence_group_id: string | null;
   rescheduled_from_id: string | null;
   notes: string | null;
+  deleted_at: string | null;
   students: { full_name: string } | null;
 };
 
+export type AppointmentDeletionScope = "single" | "future" | "series";
+
 const appointmentFields =
-  "id, professional_id, student_id, type, starts_at, ends_at, status, recurrence_group_id, rescheduled_from_id, notes, students(full_name)";
+  "id, professional_id, student_id, type, starts_at, ends_at, status, recurrence_group_id, rescheduled_from_id, notes, deleted_at, students(full_name)";
 
 async function currentUserId() {
   const supabase = createClient();
@@ -43,6 +46,7 @@ export async function listAppointments(start: string, end: string) {
   const { data, error } = await supabase
     .from("appointments")
     .select(appointmentFields)
+    .is("deleted_at", null)
     .gte("starts_at", start)
     .lt("starts_at", end)
     .order("starts_at");
@@ -92,8 +96,11 @@ export async function rescheduleAppointment(id: string, startsAt: string, endsAt
   if (error) throw error;
 }
 
-export async function deleteAppointment(id: string) {
+export async function deleteAppointment(id: string, scope: AppointmentDeletionScope = "single") {
   const supabase = createClient();
-  const { error } = await supabase.from("appointments").delete().eq("id", id);
+  const { error } = await supabase.rpc("delete_appointment_occurrences", {
+    p_appointment_id: id,
+    p_scope: scope,
+  });
   if (error) throw error;
 }
