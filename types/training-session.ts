@@ -10,6 +10,7 @@ export type TrainingSessionSet = {
   isAdded: boolean;
   isRemoved: boolean;
   method: string;
+  plannedMethod: string | null;
   actualMethod: string | null;
   plannedRepsMin: number | null;
   plannedRepsMax: number | null;
@@ -24,6 +25,12 @@ export type TrainingSessionSet = {
   actualRpe: number | null;
   notes: string | null;
   changed: boolean;
+};
+
+export type TrainingSessionPromotionSelection = {
+  sessionExerciseId: string;
+  sessionSetId?: string;
+  changes: { load?: boolean; reps?: boolean; method?: boolean; series?: boolean; exercise?: boolean };
 };
 
 export type TrainingSessionExercise = {

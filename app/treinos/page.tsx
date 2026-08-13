@@ -13,9 +13,9 @@ import VolumeMetricToggle from "@/components/training/VolumeMetricToggle";
 import { formatVolumeValue, volumeByMuscle, type VolumeMetric } from "@/lib/training-volume";
 import { exerciseRepository } from "@/services/exercise-repository";
 import { createTrainingProtocol, deleteTrainingPeriod, listTrainingProtocols, listTrainingStudents, saveProtocol, systemExerciseReferences } from "@/services/training";
-import { addSessionSet, completeTrainingSession, getTrainingSession, removeSessionSet, startTrainingSession, updateSessionExercise, updateSessionNotes, updateSessionSet } from "@/services/training-sessions";
+import { addSessionSet, completeTrainingSession, getTrainingSession, promoteTrainingSessionChanges, removeSessionSet, startTrainingSession, updateSessionExercise, updateSessionNotes, updateSessionSet } from "@/services/training-sessions";
 import type { AdvancedMethod, ExerciseCatalogReference, PrescribedExercise as Exercise, Protocol, SeriesConfiguration, TrainingStudent, Workout } from "@/types/training";
-import type { TrainingSession, TrainingSessionCompletionMode, TrainingSessionItemStatus } from "@/types/training-session";
+import type { TrainingSession, TrainingSessionCompletionMode, TrainingSessionItemStatus, TrainingSessionPromotionSelection } from "@/types/training-session";
 
 type SessionExercise = Exercise & {
   originalExerciseId: string; sessionExerciseId: string; executionStatus: TrainingSessionItemStatus;
@@ -228,6 +228,9 @@ function WorkoutsPageContent() {
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: string } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<string[]>([]);
   const [incompleteFinishOpen, setIncompleteFinishOpen] = useState(false);
+  const [promotionOpen, setPromotionOpen] = useState(false);
+  const [promotionSelection, setPromotionSelection] = useState<TrainingSessionPromotionSelection[]>([]);
+  const [promotionCompletionMode, setPromotionCompletionMode] = useState<TrainingSessionCompletionMode>("assume_unmodified_as_planned");
   const [sessionPersistenceError, setSessionPersistenceError] = useState("");
   const [pendingSessionMutations, setPendingSessionMutations] = useState(0);
   const [sessionCompleting, setSessionCompleting] = useState(false);
@@ -836,42 +839,23 @@ function WorkoutsPageContent() {
     setExpandedEditorExercise(null);
   }
 
-  function finishSession() {
-    if (!activeSessionRecord) return;
-    setIncompleteFinishOpen(true);
-  }
+  function finishSession() { if (!activeSessionRecord) return; setIncompleteFinishOpen(true); }
 
-  function finishAndCompleteAll() {
-    void completeSession("assume_unmodified_as_planned");
-  }
+  function relevantSessionChanges(session: TrainingSession): TrainingSessionPromotionSelection[] { return session.exercises.flatMap((exercise) => { const selected: TrainingSessionPromotionSelection[] = []; if (exercise.executionSource === "substituted") selected.push({ sessionExerciseId: exercise.id, changes: { exercise: true } }); if (exercise.sets.some((set) => set.isAdded || set.isRemoved)) selected.push({ sessionExerciseId: exercise.id, changes: { series: true } }); exercise.sets.filter((set) => !set.isRemoved).forEach((set) => { if (set.actualLoad != null && set.actualLoad !== set.plannedLoad) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { load: true } }); if (set.actualReps != null && (set.actualReps !== set.plannedRepsMin || set.actualReps !== set.plannedRepsMax)) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { reps: true } }); if (set.actualMethod != null && set.actualMethod !== set.plannedMethod) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { method: true } }); }); return selected; }); }
 
-  function finishPartially() {
-    void completeSession("partial");
-  }
+  function promotionDescription(item: TrainingSessionPromotionSelection) { const exercise = activeSessionRecord?.exercises.find((entry) => entry.id === item.sessionExerciseId); const set = exercise?.sets.find((entry) => entry.id === item.sessionSetId); if (!exercise) return { title: "Exercício", detail: "Alteração" }; if (item.changes.exercise) return { title: exercise.name, detail: "Exercício substituído" }; if (item.changes.series) { const planned = exercise.sets.filter((entry) => !entry.isAdded).length; const executed = exercise.sets.filter((entry) => !entry.isRemoved).length; return { title: exercise.name, detail: `S?ries: ${planned} ? ${executed}` }; } if (item.changes.load && set) return { title: exercise.name, detail: `Carga: ${set.plannedLoad ?? "?"} ${set.plannedLoadUnit ?? "kg"} ? ${set.actualLoad ?? "?"} ${set.actualLoadUnit ?? set.plannedLoadUnit ?? "kg"}` }; if (item.changes.reps && set) return { title: exercise.name, detail: `Repeti??es: ${sessionReps(set.plannedRepsMin, set.plannedRepsMax, null)} ? ${set.actualReps ?? "?"}` }; if (item.changes.method && set) return { title: exercise.name, detail: `M?todo: ${set.plannedMethod ?? "conventional"} ? ${set.actualMethod ?? "conventional"}` }; return { title: exercise.name, detail: "Alteração" }; }
 
-  async function completeSession(mode: TrainingSessionCompletionMode) {
-    if (!activeSessionRecord) return;
-    setSessionCompleting(true);
-    setSessionPersistenceError("");
-    try {
-      await sessionMutationQueueRef.current;
-      if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar.");
-      const completedSession = await completeTrainingSession(activeSessionRecord.id, mode);
-      if (completedSession.status !== (mode === "partial" ? "partial" : "completed")) throw new Error("O status final confirmado pelo banco é inválido.");
-      setIncompleteFinishOpen(false);
-      setSessionExercises([]);
-      setActiveSessionRecord(null);
-      setActiveSession(null);
-      sessionBootstrapRef.current = null;
-      router.replace("/");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão.";
-      setSessionPersistenceError(message);
-      setPersistenceError(message);
-    } finally {
-      setSessionCompleting(false);
-    }
-  }
+  function finishAndCompleteAll() { void prepareCompletion("assume_unmodified_as_planned"); }
+
+  function finishPartially() { void prepareCompletion("partial"); }
+
+  async function prepareCompletion(mode: TrainingSessionCompletionMode) { if (!activeSessionRecord) return; try { await sessionMutationQueueRef.current; if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar."); const refreshed = await getTrainingSession(activeSessionRecord.id); const changes = relevantSessionChanges(refreshed); if (!changes.length) { void completeSession(mode); return; } setPromotionSelection(changes); setPromotionCompletionMode(mode); setIncompleteFinishOpen(false); setPromotionOpen(true); } catch (error) { setSessionPersistenceError(error instanceof Error ? error.message : "Não foi possível preparar a conclusão da sessão."); } }
+
+  function closeCompletedSession() { setSessionExercises([]); setActiveSessionRecord(null); setActiveSession(null); sessionBootstrapRef.current = null; router.replace("/"); }
+
+  async function completeWithPromotion(mode: TrainingSessionCompletionMode, promote: boolean) { if (!activeSessionRecord) return; const sessionId = activeSessionRecord.id; setSessionCompleting(true); setSessionPersistenceError(""); try { await sessionMutationQueueRef.current; if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar."); const completed = ["completed", "partial"].includes(activeSessionRecord.status) ? await getTrainingSession(sessionId) : await completeTrainingSession(sessionId, mode); setActiveSessionRecord(completed); setSessionExercises(exercisesFromSession(completed)); if (!(["completed", "partial"].includes(completed.status))) throw new Error("O banco não confirmou a conclusão da sessão."); const selectedChanges = promotionSelection.filter((item) => Object.values(item.changes).some(Boolean)); if (promote && selectedChanges.length) await promoteTrainingSessionChanges(sessionId, selectedChanges); setIncompleteFinishOpen(false); setPromotionOpen(false); closeCompletedSession(); } catch (error) { const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão."; setSessionPersistenceError(message); setPersistenceError(message); } finally { setSessionCompleting(false); } }
+
+  async function completeSession(mode: TrainingSessionCompletionMode) { if (!activeSessionRecord) return; setSessionCompleting(true); setSessionPersistenceError(""); try { await sessionMutationQueueRef.current; if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar."); const completedSession = await completeTrainingSession(activeSessionRecord.id, mode); if (completedSession.status !== (mode === "partial" ? "partial" : "completed")) throw new Error("O status final confirmado pelo banco é inválido."); setIncompleteFinishOpen(false); closeCompletedSession(); } catch (error) { const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão."; setSessionPersistenceError(message); setPersistenceError(message); } finally { setSessionCompleting(false); } }
 
   function deleteWorkoutFromEditor(protocol: Protocol, workoutId: string) {
     const remaining = protocol.workouts.filter((workout) => workout.id !== workoutId);
@@ -1255,6 +1239,8 @@ function WorkoutsPageContent() {
       {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} sessionNotes={activeSessionRecord?.notes} persistenceError={sessionPersistenceError} isSaving={pendingSessionMutations > 0} isCompleting={sessionCompleting} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onUpdateExerciseStatus={updateSessionExerciseStatus} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onUpdateSeriesStatus={updateSessionSeriesStatus} onUpdateSeriesEffort={updateSessionSeriesEffort} onUpdateSeriesMethod={updateSessionSeriesMethod} onUpdateExerciseNotes={updateSessionExerciseNotes} onUpdateSessionNotes={updateActiveSessionNotes} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExerciseValue} onFinish={finishSession} />}
 
       {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Como concluir a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">No modo conforme planejado, itens não alterados e não pulados serão registrados como execução presumida. Faixas de repetições permanecem como faixas, sem inventar um valor exato.</p>{sessionPersistenceError && <p role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs font-medium text-red-600">{sessionPersistenceError}</p>}<div className="mt-6 space-y-2"><Button className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishAndCompleteAll}>{sessionCompleting ? "Finalizando…" : "Executado conforme planejado"}</Button><Button variant="secondary" className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishPartially}>Concluir somente o confirmado</Button><Button variant="ghost" className="w-full" disabled={sessionCompleting} onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
+
+      {promotionOpen && activeSessionRecord && <div className="fixed inset-0 z-[73] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><Card className="w-full max-w-md"><h2 id="promotion-title" className="text-xl font-semibold">Alterações encontradas</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Marque somente os ajustes que devem virar uma nova versão da prescrição. A sessão continuará ligada ao treino executado.</p><div className="mt-4 max-h-56 space-y-2 overflow-y-auto">{promotionSelection.map((item, index) => { const summary = promotionDescription(item); const change = Object.keys(item.changes)[0] as keyof TrainingSessionPromotionSelection["changes"]; return <label key={`${item.sessionExerciseId}:${item.sessionSetId ?? "exercise"}:${change}`} className="flex gap-3 rounded-xl border border-[var(--border)] p-3 text-sm"><input type="checkbox" checked={Boolean(item.changes[change])} onChange={(event) => setPromotionSelection((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, changes: { ...entry.changes, [change]: event.target.checked } } : entry))} /><span><strong>{summary.title}</strong><br /><span className="text-xs text-[var(--muted)]">{summary.detail}</span></span></label>; })}</div><div className="mt-6 space-y-2"><Button className="w-full" disabled={sessionCompleting} onClick={() => void completeWithPromotion(promotionCompletionMode, true)}>Aplicar aos próximos treinos</Button><Button variant="secondary" className="w-full" disabled={sessionCompleting} onClick={() => void completeWithPromotion(promotionCompletionMode, false)}>Somente nesta sessão</Button><Button variant="ghost" className="w-full" disabled={sessionCompleting} onClick={() => { setPromotionOpen(false); setIncompleteFinishOpen(true); }}>Voltar</Button></div></Card></div>}
 
     </MainLayout>
   );

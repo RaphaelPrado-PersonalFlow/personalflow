@@ -4,6 +4,7 @@ import type {
   TrainingSessionCompletionMode,
   TrainingSessionExercise,
   TrainingSessionItemStatus,
+  TrainingSessionPromotionSelection,
   TrainingSessionSet,
 } from "@/types/training-session";
 
@@ -17,6 +18,7 @@ function mapSet(row: JsonRecord): TrainingSessionSet {
     setNumber: Number(row.set_number), status: row.status as TrainingSessionItemStatus,
     isAdded: Boolean(row.is_added), isRemoved: Boolean(row.is_removed),
     method: String(row.actual_method ?? row.planned_method ?? "conventional"),
+    plannedMethod: row.planned_method ? String(row.planned_method) : null,
     actualMethod: row.actual_method ? String(row.actual_method) : null,
     plannedRepsMin: numberOrNull(row.planned_reps_min), plannedRepsMax: numberOrNull(row.planned_reps_max),
     plannedLoad: numberOrNull(row.planned_load), plannedLoadUnit: row.planned_load_unit ? String(row.planned_load_unit) : null,
@@ -108,6 +110,19 @@ export function completeTrainingSession(id: string, mode: TrainingSessionComplet
 }
 export function cancelTrainingSession(id: string, abandoned = false) {
   return rpc("cancel_training_session", { p_session_id: id, p_as_abandoned: abandoned });
+}
+
+export async function promoteTrainingSessionChanges(id: string, selection: TrainingSessionPromotionSelection[]) {
+  const { data, error } = await createClient().rpc("promote_training_session_changes", {
+    p_session_id: id,
+    p_selection: selection.map((item) => ({ session_exercise_id: item.sessionExerciseId, session_set_id: item.sessionSetId ?? null, changes: item.changes })),
+  });
+  if (error) {
+    const diagnostic = [error.message, error.details, error.hint, error.code].filter(Boolean).join(" | ");
+    if (process.env.NODE_ENV !== "production") console.error("promote_training_session_changes failed", { sessionId: id, selection, diagnostic });
+    throw new Error("N\u00e3o foi poss\u00edvel atualizar os pr\u00f3ximos treinos. A sess\u00e3o realizada foi preservada.");
+  }
+  return String(data);
 }
 
 export type WorkoutExecutionSummary = { count: number; lastCompletedAt: string | null };
