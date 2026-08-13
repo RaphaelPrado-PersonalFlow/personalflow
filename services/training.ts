@@ -14,7 +14,7 @@ import type {
 
 type SetRow = {
   id: string; set_number: number; method: string; reps_min: number | null; reps_max: number | null;
-  target_load: number | null; load_unit: string; rest_after_seconds: number | null;
+  target_load: number | null; load_unit: string; rest_after_seconds: number | null; notes: string | null;
 };
 type ExerciseRow = {
   id: string; exercise_source: "system" | "custom"; system_exercise_id: number | null;
@@ -87,11 +87,24 @@ function loadLabel(value: number | null, unit: string) {
   return `${Number(value).toLocaleString("pt-BR")} ${unit === "kg" ? "kg" : unit}`;
 }
 
+function storedBlocks(notes: string | null): { reps: number[]; loads: string[] } | undefined {
+  if (!notes) return undefined;
+  try {
+    const value = JSON.parse(notes) as { personalflow_advanced_blocks?: unknown; personalflow_advanced_block_loads?: unknown };
+    const blocks = value.personalflow_advanced_blocks;
+    if (!Array.isArray(blocks) || !blocks.every((item) => typeof item === "number")) return undefined;
+    const loads = Array.isArray(value.personalflow_advanced_block_loads)
+      ? value.personalflow_advanced_block_loads.map((item) => loadLabel(Number(item), "kg"))
+      : [];
+    return { reps: blocks, loads };
+  } catch { return undefined; }
+}
+
 function mapExercise(row: ExerciseRow): PrescribedExercise {
   const sets = [...(row.prescribed_sets ?? [])].sort((a, b) => a.set_number - b.set_number);
   const configurations: SeriesConfiguration[] = sets.map((set) => ({
     id: set.id, method: methodFromDb[set.method] ?? "Convencional", reps: repetitions(set),
-    load: loadLabel(set.target_load, set.load_unit),
+    load: loadLabel(set.target_load, set.load_unit), blocks: storedBlocks(set.notes)?.reps, blockLoads: storedBlocks(set.notes)?.loads,
   }));
   const first = configurations[0];
   return {
@@ -140,7 +153,7 @@ const protocolSelect = `
       estimated_duration_minutes, target_executions,
       workout_exercises(id, exercise_source, system_exercise_id, custom_exercise_id,
         exercise_name_snapshot, position, rest_between_sets_seconds,
-        prescribed_sets(id, set_number, method, reps_min, reps_max, target_load, load_unit, rest_after_seconds))))`;
+        prescribed_sets(id, set_number, method, reps_min, reps_max, target_load, load_unit, rest_after_seconds, notes))))`;
 
 export async function listTrainingStudents(): Promise<TrainingStudent[]> {
   const { data, error } = await createClient().from("students").select("id, full_name, goal, status").order("full_name");
@@ -208,6 +221,21 @@ export async function saveProtocol(protocol: Protocol, catalog: ExerciseCatalogR
   return getTrainingProtocol(protocol.id);
 }
 
+/** Updates only the protocol header; prescribed periods and workouts are deliberately untouched. */
+export async function updateTrainingProtocolDetails(input: Pick<Protocol, "id" | "name" | "objective" | "frequency" | "start" | "end">) {
+  const status = statusToDb[protocolStatusFromDates(input.start, input.end)];
+  const { error } = await createClient().from("training_protocols").update({
+    name: input.name ?? input.objective,
+    objective: input.objective,
+    planned_weekly_frequency: input.frequency,
+    start_date: displayToDate(input.start),
+    end_date: displayToDate(input.end),
+    status,
+  }).eq("id", input.id);
+  if (error) throw error;
+  return getTrainingProtocol(input.id);
+}
+
 function prescriptionPayload(protocol: Protocol, catalog: ExerciseCatalogReference[]) {
   const automaticStatus = protocol.status === "Arquivado" ? "Arquivado" : protocolStatusFromDates(protocol.start, protocol.end);
   return {
@@ -247,6 +275,10 @@ function exercisePayload(exercise: PrescribedExercise, index: number, catalog: E
         id: set.id ?? crypto.randomUUID(), set_number: setIndex + 1, set_type: "working",
         method: methodToDb[set.method], reps_min: min, reps_max: max,
         target_load: numericValue(set.load), load_unit: "kg", rest_after_seconds: restToSeconds(exercise.rest),
+        notes: set.blocks?.length ? JSON.stringify({
+          personalflow_advanced_blocks: set.blocks,
+          personalflow_advanced_block_loads: set.blocks.map((_, blockIndex) => numericValue(set.blockLoads?.[blockIndex] ?? set.load)),
+        }) : null,
       };
     }),
   };

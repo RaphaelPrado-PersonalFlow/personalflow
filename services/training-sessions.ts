@@ -4,8 +4,8 @@ import type {
   TrainingSessionCompletionMode,
   TrainingSessionExercise,
   TrainingSessionItemStatus,
-  TrainingSessionPromotionSelection,
   TrainingSessionSet,
+  TrainingSessionPromotionSelection,
 } from "@/types/training-session";
 
 type JsonRecord = Record<string, unknown>;
@@ -13,15 +13,32 @@ type JsonRecord = Record<string, unknown>;
 const numberOrNull = (value: unknown) => value == null ? null : Number(value);
 
 function mapSet(row: JsonRecord): TrainingSessionSet {
+  const plannedBlocks = Array.isArray(row.planned_blocks) ? row.planned_blocks.map(Number).filter(Number.isFinite) : [];
+  const baseline = (row.baseline_snapshot ?? {}) as JsonRecord;
+  let plannedBlockLoads: Array<number | null> = [];
+  try {
+    const notes = JSON.parse(String(baseline.notes ?? "{}")) as { personalflow_advanced_block_loads?: unknown };
+    plannedBlockLoads = Array.isArray(notes.personalflow_advanced_block_loads)
+      ? notes.personalflow_advanced_block_loads.map(numberOrNull)
+      : [];
+  } catch { plannedBlockLoads = []; }
+  const actualBlocks = Array.isArray(row.actual_blocks) ? row.actual_blocks.map((block) => {
+    const value = block as JsonRecord;
+    return { reps: Number(value.reps), load: numberOrNull(value.load), rir: numberOrNull(value.rir), status: (value.status === "completed" || value.status === "skipped" ? value.status : "pending") as "completed" | "pending" | "skipped" };
+  }) : null;
   return {
     id: String(row.id), prescribedSetId: row.prescribed_set_id ? String(row.prescribed_set_id) : null,
     setNumber: Number(row.set_number), status: row.status as TrainingSessionItemStatus,
     isAdded: Boolean(row.is_added), isRemoved: Boolean(row.is_removed),
     method: String(row.actual_method ?? row.planned_method ?? "conventional"),
     plannedMethod: row.planned_method ? String(row.planned_method) : null,
+    plannedBlocks, plannedBlockLoads, actualBlocks,
     actualMethod: row.actual_method ? String(row.actual_method) : null,
     plannedRepsMin: numberOrNull(row.planned_reps_min), plannedRepsMax: numberOrNull(row.planned_reps_max),
     plannedLoad: numberOrNull(row.planned_load), plannedLoadUnit: row.planned_load_unit ? String(row.planned_load_unit) : null,
+    plannedRestAfterSeconds: numberOrNull(row.planned_rest_after_seconds),
+    operationalLoad: numberOrNull(row.operational_load), operationalLoadUnit: row.operational_load_unit ? String(row.operational_load_unit) : null,
+    operationalLoadSource: (row.operational_load_source ?? "planned") as TrainingSessionSet["operationalLoadSource"],
     plannedRir: numberOrNull(row.planned_rir), plannedRpe: numberOrNull(row.planned_rpe),
     actualReps: numberOrNull(row.actual_reps), actualLoad: numberOrNull(row.actual_load),
     actualLoadUnit: row.actual_load_unit ? String(row.actual_load_unit) : null,
@@ -38,6 +55,7 @@ function mapExercise(row: JsonRecord): TrainingSessionExercise {
     position: Number(row.position), status: row.status as TrainingSessionItemStatus,
     executionSource: row.execution_source as TrainingSessionExercise["executionSource"],
     name: String(row.executed_name_snapshot ?? baseline.exercise_name_snapshot ?? "Exercício"),
+    baselineName: String(baseline.exercise_name_snapshot ?? "Exercício"),
     exerciseSource: String(row.executed_exercise_source ?? baseline.exercise_source) as "system" | "custom",
     systemExerciseId: numberOrNull(row.executed_system_exercise_id ?? baseline.system_exercise_id) ?? undefined,
     customExerciseId: numberOrNull(row.executed_custom_exercise_id ?? baseline.custom_exercise_id) ?? undefined,
@@ -111,16 +129,23 @@ export function completeTrainingSession(id: string, mode: TrainingSessionComplet
 export function cancelTrainingSession(id: string, abandoned = false) {
   return rpc("cancel_training_session", { p_session_id: id, p_as_abandoned: abandoned });
 }
-
+export async function listInProgressWorkoutSessions(workoutIds: string[]): Promise<Record<string, string>> {
+  if (!workoutIds.length) return {};
+  const { data, error } = await createClient().from("training_sessions")
+    .select("id, workout_id, started_at").in("workout_id", workoutIds).eq("status", "in_progress")
+    .order("started_at", { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as Array<{ id: string; workout_id: string }>).reduce<Record<string, string>>((result, session) => {
+    if (!result[session.workout_id]) result[session.workout_id] = session.id;
+    return result;
+  }, {});
+}
 export async function promoteTrainingSessionChanges(id: string, selection: TrainingSessionPromotionSelection[]) {
-  const { data, error } = await createClient().rpc("promote_training_session_changes", {
-    p_session_id: id,
-    p_selection: selection.map((item) => ({ session_exercise_id: item.sessionExerciseId, session_set_id: item.sessionSetId ?? null, changes: item.changes })),
-  });
+  const { data, error } = await createClient().rpc("promote_training_session_changes", { p_session_id: id, p_selection: selection.map((item) => ({ session_exercise_id: item.sessionExerciseId, session_set_id: item.sessionSetId ?? null, changes: item.changes })) });
   if (error) {
     const diagnostic = [error.message, error.details, error.hint, error.code].filter(Boolean).join(" | ");
     if (process.env.NODE_ENV !== "production") console.error("promote_training_session_changes failed", { sessionId: id, selection, diagnostic });
-    throw new Error("N\u00e3o foi poss\u00edvel atualizar os pr\u00f3ximos treinos. A sess\u00e3o realizada foi preservada.");
+    throw new Error("Não foi possível atualizar os próximos treinos. A sessão realizada foi preservada.");
   }
   return String(data);
 }
@@ -128,18 +153,29 @@ export async function promoteTrainingSessionChanges(id: string, selection: Train
 export type WorkoutExecutionSummary = { count: number; lastCompletedAt: string | null };
 
 export async function listWorkoutExecutionSummaries(): Promise<Record<string, WorkoutExecutionSummary>> {
-  const { data, error } = await createClient()
+  const client = createClient();
+  const [{ data: sessionData, error: sessionError }, { data: workoutData, error: workoutError }] = await Promise.all([
+    client
     .from("training_sessions")
     .select("workout_id, completed_at")
     .in("status", ["completed", "partial"])
     .not("completed_at", "is", null)
-    .order("completed_at", { ascending: false });
-  if (error) throw error;
-  const rows = (data ?? []) as Array<{ workout_id: string; completed_at: string | null }>;
+    .order("completed_at", { ascending: false }),
+    client.from("workouts").select("id, lineage_id"),
+  ]);
+  if (sessionError) throw sessionError;
+  if (workoutError) throw workoutError;
+
+  const workouts = (workoutData ?? []) as Array<{ id: string; lineage_id: string }>;
+  const lineageByWorkoutId = new Map(
+    workouts.map((workout) => [workout.id, workout.lineage_id]),
+  );
+  const rows = (sessionData ?? []) as Array<{ workout_id: string; completed_at: string | null }>;
   return rows.reduce((summaries: Record<string, WorkoutExecutionSummary>, row) => {
-    const workoutId = String(row.workout_id);
-    const current = summaries[workoutId];
-    summaries[workoutId] = {
+    const lineageId = lineageByWorkoutId.get(String(row.workout_id));
+    if (!lineageId) return summaries;
+    const current = summaries[lineageId];
+    summaries[lineageId] = {
       count: (current?.count ?? 0) + 1,
       lastCompletedAt: current?.lastCompletedAt ?? (row.completed_at ? String(row.completed_at) : null),
     };

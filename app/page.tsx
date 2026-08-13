@@ -56,7 +56,7 @@ export default function Home() {
   };
 
   const startWorkout = (protocol: Protocol, workout: Workout) => {
-    router.push(`/treinos?aluno=${protocol.studentId}&protocolo=${protocol.id}&treinoId=${workout.id}`);
+    router.push(`/treinos?aluno=${protocol.studentId}&protocolo=${protocol.id}&periodo=${workout.periodId}&treinoId=${workout.id}`);
   };
 
   return (
@@ -120,7 +120,7 @@ export default function Home() {
                 <div className="space-y-3">
                   {sessionStudent.workouts.map((workout) => {
                     const target = workout.targetExecutions ?? Math.max(1, Math.round((sessionStudent.frequency * 8) / sessionStudent.workouts.length));
-                    const execution = workoutExecutions[workout.id];
+                    const execution = workoutExecutions[workout.lineageId];
                     const completed = execution?.count ?? 0;
                     const progress = Math.min((completed / target) * 100, 100);
                     const lastExecution = execution?.lastCompletedAt

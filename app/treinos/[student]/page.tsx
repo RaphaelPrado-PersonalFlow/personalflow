@@ -1,13 +1,13 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { type FormEvent, use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import MainLayout from "@/components/layout/MainLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
-import { deleteTrainingProtocol, listTrainingProtocols, listTrainingStudents, reorderTrainingProtocols } from "@/services/training";
+import { deleteTrainingProtocol, listTrainingProtocols, listTrainingStudents, reorderTrainingProtocols, updateTrainingProtocolDetails } from "@/services/training";
 import type { Protocol, TrainingStudent } from "@/types/training";
 
 type Props = { params: Promise<{ student: string }> };
@@ -22,6 +22,8 @@ export default function StudentProtocolsPage({ params }: Props) {
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [reordering, setReordering] = useState(false);
+  const [protocolToEdit, setProtocolToEdit] = useState<Protocol | null>(null);
+  const [savingProtocol, setSavingProtocol] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadedStudentId, setLoadedStudentId] = useState("");
 
@@ -71,6 +73,25 @@ export default function StudentProtocolsPage({ params }: Props) {
     }
   }
 
+  async function saveProtocolDetails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!protocolToEdit) return;
+    const data = new FormData(event.currentTarget);
+    const next = {
+      ...protocolToEdit,
+      name: String(data.get("name") ?? ""), objective: String(data.get("objective") ?? ""),
+      frequency: Math.max(1, Number(data.get("frequency") ?? 1)), start: String(data.get("start") ?? ""), end: String(data.get("end") ?? ""),
+    };
+    setSavingProtocol(true); setDeleteError("");
+    try {
+      const saved = await updateTrainingProtocolDetails(next);
+      setProtocols((current) => current.map((protocol) => protocol.id === saved.id ? saved : protocol));
+      setProtocolToEdit(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Não foi possível salvar o protocolo.");
+    } finally { setSavingProtocol(false); }
+  }
+
   if (loading || loadedStudentId !== studentId) return <MainLayout><Card>Carregando protocolos...</Card></MainLayout>;
   if (!student) return <MainLayout><Card className="p-8 text-center"><h1 className="text-xl font-semibold">Aluno não encontrado</h1><Button className="mt-5" onClick={() => router.push("/treinos")}>Voltar para treinos</Button></Card></MainLayout>;
 
@@ -84,9 +105,6 @@ export default function StudentProtocolsPage({ params }: Props) {
     <section className="space-y-3">
       {protocols.map((protocol, protocolIndex) => {
         const expanded = expandedProtocols.includes(protocol.id);
-        const period = protocol.periods.find((item) => item.id === protocol.activePeriodId) ?? protocol.periods[0];
-        const workout = period?.workouts[0];
-        const editorUrl = `/treinos?aluno=${student.id}&editarProtocolo=${protocol.id}${period ? `&periodo=${period.id}` : ""}${workout ? `&editarTreino=${workout.id}` : ""}`;
         return <Card key={protocol.id} className="overflow-hidden p-0">
           <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:p-5">
             <button type="button" onClick={() => setExpandedProtocols((current) => current.includes(protocol.id) ? current.filter((id) => id !== protocol.id) : [...current, protocol.id])} className="flex min-w-0 flex-1 items-center gap-3 text-left">
@@ -97,7 +115,7 @@ export default function StudentProtocolsPage({ params }: Props) {
           </div>
           {expanded && <div className="border-t border-[var(--border)] bg-[var(--surface-raised)]/40 p-4 sm:p-5">
             <div className="grid gap-3 text-sm sm:grid-cols-3"><div><span className="text-[var(--muted)]">Início</span><strong className="mt-1 block">{protocol.start}</strong></div><div><span className="text-[var(--muted)]">Frequência</span><strong className="mt-1 block">{protocol.frequency}× por semana</strong></div><div><span className="text-[var(--muted)]">Períodos</span><strong className="mt-1 block">{protocol.periods.length}</strong></div></div>
-            <div className="mt-4 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => { setDeleteError(""); setProtocolToDelete(protocol); }} className="h-10 rounded-xl border border-red-500/30 px-4 text-sm font-semibold text-red-500 hover:bg-red-500/10">Excluir protocolo</button><Button variant="secondary" onClick={() => router.push(editorUrl)}>Editar protocolo</Button></div>
+            <div className="mt-4 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => { setDeleteError(""); setProtocolToDelete(protocol); }} className="h-10 rounded-xl border border-red-500/30 px-4 text-sm font-semibold text-red-500 hover:bg-red-500/10">Excluir protocolo</button><Button variant="secondary" onClick={() => setProtocolToEdit(protocol)}>Editar protocolo</Button></div>
           </div>}
         </Card>;
       })}
@@ -107,5 +125,6 @@ export default function StudentProtocolsPage({ params }: Props) {
     {protocolToDelete && <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-protocol-title" onClick={() => !deleting && setProtocolToDelete(null)}>
       <Card className="w-full max-w-md" onClick={(event) => event.stopPropagation()}><p className="text-xs font-semibold uppercase tracking-wider text-red-500">Excluir protocolo</p><h2 id="delete-protocol-title" className="mt-2 text-xl font-semibold">Excluir {protocolToDelete.name ?? protocolToDelete.objective}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Esta ação removerá permanentemente os períodos, treinos, exercícios prescritos e séries vinculados ao protocolo.</p>{deleteError && <p className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500">{deleteError}</p>}<div className="mt-6 grid grid-cols-2 gap-2"><Button variant="secondary" disabled={deleting} onClick={() => setProtocolToDelete(null)}>Cancelar</Button><button type="button" disabled={deleting} onClick={confirmProtocolDeletion} className="h-10 rounded-xl bg-red-600 px-4 text-sm font-semibold text-white hover:bg-red-500 disabled:cursor-wait disabled:opacity-60">{deleting ? "Excluindo..." : "Excluir protocolo"}</button></div></Card>
     </div>}
+    {protocolToEdit && <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-protocol-title" onClick={() => !savingProtocol && setProtocolToEdit(null)}><Card className="w-full max-w-lg" onClick={(event) => event.stopPropagation()}><form onSubmit={saveProtocolDetails}><h2 id="edit-protocol-title" className="text-xl font-semibold">Editar protocolo</h2><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm">Nome<input name="name" defaultValue={protocolToEdit.name ?? ""} className="mt-1 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm">Objetivo<input name="objective" required defaultValue={protocolToEdit.objective} className="mt-1 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm">Frequência semanal<input name="frequency" type="number" min="1" max="7" required defaultValue={protocolToEdit.frequency} className="mt-1 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm">Início<input name="start" required defaultValue={protocolToEdit.start} className="mt-1 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm sm:col-span-2">Término<input name="end" required defaultValue={protocolToEdit.end} className="mt-1 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 grid grid-cols-2 gap-2"><Button type="button" variant="secondary" disabled={savingProtocol} onClick={() => setProtocolToEdit(null)}>Cancelar</Button><Button type="submit" disabled={savingProtocol}>{savingProtocol ? "Salvando…" : "Salvar protocolo"}</Button></div></form></Card></div>}
   </div></MainLayout>;
 }

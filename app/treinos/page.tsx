@@ -21,6 +21,7 @@ type SessionExercise = Exercise & {
   originalExerciseId: string; sessionExerciseId: string; executionStatus: TrainingSessionItemStatus;
   notes?: string | null; changed?: boolean;
 };
+type SessionMiniBlock = NonNullable<SeriesConfiguration["actualBlocks"]>[number];
 const systemExerciseCatalog = systemExerciseReferences();
 
 function matchesExerciseSearch(exercise: { name: string; aliases: string }, query: string) {
@@ -51,6 +52,7 @@ function defaultBlocks(method: AdvancedMethod) {
   if (method === "Cluster set") return [4, 4, 4];
   if (method === "Rest-pause" || method === "Myo-reps") return [10, 4, 4];
   if (method === "Pirâmide") return [12, 10, 8, 6];
+  if (method === "Bi-set") return [10, 10];
   return undefined;
 }
 
@@ -58,7 +60,7 @@ function seriesConfigurations(exercise: Exercise, sets = exercise.sets ?? series
   const repetitions = repetitionsBySeries(exercise, sets);
   return Array.from({ length: sets }, (_, index): SeriesConfiguration => {
     const current = exercise.seriesConfigurations?.[index];
-    if (current) return { ...current, blocks: current.blocks ? [...current.blocks] : undefined };
+    if (current) return { ...current, blocks: current.blocks ? [...current.blocks] : undefined, blockLoads: current.blockLoads ? [...current.blockLoads] : undefined, actualBlocks: current.actualBlocks ? current.actualBlocks.map((block) => ({ ...block })) : undefined };
     const legacyMethod = exercise.method === "Pirâmide" || exercise.methodSeries?.includes(index)
       ? exercise.method ?? "Convencional"
       : "Convencional";
@@ -83,6 +85,14 @@ function formatSeriesPrescription(configurations: SeriesConfiguration[]) {
   }).join(" + ");
 }
 
+function restSummary(rest?: string) {
+  return rest ? rest.replace("''", " s").replace(/(\d+)'00 s/, "$1 min") : "";
+}
+
+function exerciseSummary(exercise: Exercise) {
+  return [exercise.prescription, exercise.load, restSummary(exercise.rest)].filter(Boolean).join(" · ");
+}
+
 function sessionReps(min: number | null, max: number | null, actual: number | null) {
   if (actual != null) return String(actual);
   if (min == null && max == null) return "—";
@@ -90,9 +100,16 @@ function sessionReps(min: number | null, max: number | null, actual: number | nu
   return `${min}–${max}`;
 }
 
-function sessionLoad(planned: number | null, actual: number | null, unit: string | null) {
-  const value = actual ?? planned;
+function sessionLoad(planned: number | null, operational: number | null, actual: number | null, unit: string | null) {
+  const value = actual ?? operational ?? planned;
   return value == null ? "—" : `${value.toLocaleString("pt-BR")} ${unit ?? "kg"}`;
+}
+
+function sessionRest(exercise: TrainingSession["exercises"][number]) {
+  const rests = [...new Set(exercise.sets.map((set) => set.plannedRestAfterSeconds).filter((value): value is number => value != null))];
+  if (!rests.length) return undefined;
+  const label = (seconds: number) => seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min${seconds % 60 ? ` ${seconds % 60} s` : ""}`;
+  return rests.length === 1 ? label(rests[0]) : `${label(Math.min(...rests))}–${label(Math.max(...rests))}`;
 }
 
 function exercisesFromSession(session: TrainingSession): SessionExercise[] {
@@ -100,8 +117,20 @@ function exercisesFromSession(session: TrainingSession): SessionExercise[] {
     const configurations: SeriesConfiguration[] = exercise.sets.map((set) => ({
       id: set.id, method: ({ conventional: "Convencional", drop_set: "Drop-set", rest_pause: "Rest-pause", cluster: "Cluster set", pyramid: "Pirâmide", myo_reps: "Myo-reps", bi_set: "Bi-set" } as Record<string, AdvancedMethod>)[set.method] ?? "Convencional",
       reps: sessionReps(set.plannedRepsMin, set.plannedRepsMax, set.actualReps),
-      load: sessionLoad(set.plannedLoad, set.actualLoad, set.actualLoadUnit ?? set.plannedLoadUnit),
+      load: sessionLoad(set.plannedLoad, set.operationalLoad, set.actualLoad, set.actualLoadUnit ?? set.operationalLoadUnit ?? set.plannedLoadUnit),
       executionStatus: set.status, actualRir: set.actualRir, actualRpe: set.actualRpe,
+      blocks: (set.actualMethod ?? set.plannedMethod) === "conventional" ? undefined : set.plannedBlocks,
+      blockLoads: set.plannedBlocks.map((_, blockIndex) => `${set.plannedBlockLoads[blockIndex] ?? set.plannedLoad ?? set.operationalLoad ?? 0} ${set.plannedLoadUnit ?? "kg"}`),
+      // actual_blocks is the complete execution structure when present, including added/removed blocks.
+      actualBlocks: (set.actualMethod ?? set.plannedMethod) !== "conventional" && set.actualBlocks ? set.actualBlocks.map((actual, blockIndex) => {
+        const unit = set.actualLoadUnit ?? set.operationalLoadUnit ?? set.plannedLoadUnit;
+        return {
+          reps: actual.reps,
+          load: actual.load == null ? `${set.plannedBlockLoads[blockIndex] ?? set.plannedLoad ?? set.operationalLoad ?? 0} ${unit ?? "kg"}` : `${actual.load} ${unit ?? "kg"}`,
+          rir: actual.rir ?? set.actualRir,
+          status: actual.status,
+        };
+      }) : undefined,
       notes: set.notes, isRemoved: set.isRemoved,
     }));
     return {
@@ -110,6 +139,7 @@ function exercisesFromSession(session: TrainingSession): SessionExercise[] {
       exerciseSource: exercise.exerciseSource, systemExerciseId: exercise.systemExerciseId,
       customExerciseId: exercise.customExerciseId, sets: configurations.filter((set) => !set.isRemoved).length,
       reps: configurations[0]?.reps ?? "", load: configurations[0]?.load ?? "—",
+      rest: sessionRest(exercise),
       prescription: formatSeriesPrescription(configurations.filter((set) => !set.isRemoved)),
       seriesConfigurations: configurations, notes: exercise.notes, changed: exercise.changed,
     };
@@ -209,6 +239,7 @@ function WorkoutsPageContent() {
   const [activeSession, setActiveSession] = useState<{ protocol: Protocol; workout: Workout } | null>(null);
   const [activeSessionRecord, setActiveSessionRecord] = useState<TrainingSession | null>(null);
   const [sessionExercises, setSessionExercises] = useState<SessionExercise[]>([]);
+  const sessionExercisesRef = useRef<SessionExercise[]>([]);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | null>(null);
   const [workoutToEdit, setWorkoutToEdit] = useState<{ protocolId: string; workout: Workout } | null>(null);
   const [workoutToRemove, setWorkoutToRemove] = useState<{ protocolId: string; workout: Workout } | null>(null);
@@ -224,6 +255,7 @@ function WorkoutsPageContent() {
   const [editingWorkoutDetails, setEditingWorkoutDetails] = useState<string | null>(null);
   const [workoutToDeleteInEditor, setWorkoutToDeleteInEditor] = useState<string | null>(null);
   const [periodToDelete, setPeriodToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [periodDetailsOpen, setPeriodDetailsOpen] = useState(false);
   const [deletingPeriod, setDeletingPeriod] = useState(false);
   const [volumeView, setVolumeView] = useState<{ scope: "protocol" | "workout"; workoutId?: string } | null>(null);
   const [completedExercises, setCompletedExercises] = useState<string[]>([]);
@@ -242,6 +274,8 @@ function WorkoutsPageContent() {
   const [periodizationCount, setPeriodizationCount] = useState(1);
   const [periodizationWeeks, setPeriodizationWeeks] = useState(1);
   const initializedEditorQuery = useRef("");
+
+  useEffect(() => { sessionExercisesRef.current = sessionExercises; }, [sessionExercises]);
 
   useEffect(() => {
     Promise.all([exerciseRepository.listCustom(), listTrainingStudents(), listTrainingProtocols()])
@@ -262,16 +296,19 @@ function WorkoutsPageContent() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const timer = window.setTimeout(async () => {
       const sessionId = searchParams.get("sessao");
       const contextStudentId = searchParams.get("aluno");
       const protocolId = searchParams.get("protocolo");
+      const periodId = searchParams.get("periodo");
       const workoutId = searchParams.get("treinoId");
       if (sessionId) {
         if (sessionBootstrapRef.current === sessionId) return;
         sessionBootstrapRef.current = sessionId;
         try {
           const session = await getTrainingSession(sessionId);
+          if (cancelled) return;
           if (session.status !== "in_progress") return;
           const protocol = protocols.find((item) => item.id === session.protocolId);
           if (!protocol) throw new Error("O protocolo desta sessão não está disponível.");
@@ -289,6 +326,7 @@ function WorkoutsPageContent() {
           setCompletedExercises(session.exercises.filter((item) => ["completed", "assumed_completed"].includes(item.status)).map((item) => item.id));
           setActiveSession({ protocol, workout });
         } catch (error) {
+          if (cancelled) return;
           sessionBootstrapRef.current = null;
           setPersistenceError(error instanceof Error ? error.message : "Não foi possível retomar a sessão.");
         }
@@ -302,16 +340,17 @@ function WorkoutsPageContent() {
         setCompletedExercises([]);
         return;
       }
-      if (!protocolId || !workoutId) {
-        setPersistenceError("Não foi possível iniciar: protocolo e treino precisam estar explícitos na URL.");
+      if (!protocolId || !periodId || !workoutId || !contextStudentId) {
+        setPersistenceError("Não foi possível iniciar: aluno, protocolo, período e treino precisam estar explícitos na URL.");
         return;
       }
       const protocol = protocols.find((item) => item.id === protocolId);
-      if (!protocol || (contextStudentId && protocol.studentId !== contextStudentId)) {
+      if (!protocol || protocol.studentId !== contextStudentId) {
         setPersistenceError("O protocolo não pertence ao aluno informado.");
         return;
       }
-      const workout = protocol.periods.flatMap((period) => period.workouts).find((item) => item.id === workoutId);
+      const period = protocol.periods.find((item) => item.id === periodId);
+      const workout = period?.workouts.find((item) => item.id === workoutId);
       if (!workout) {
         setPersistenceError("O treino informado não pertence a este protocolo.");
         return;
@@ -324,6 +363,7 @@ function WorkoutsPageContent() {
       sessionStorage.setItem(storageKey, idempotencyKey);
       try {
         const session = await startTrainingSession({ workoutId: workout.id, idempotencyKey });
+        if (cancelled) return;
         sessionStorage.removeItem(storageKey);
         setActiveSessionRecord(session);
         setSessionPersistenceError("");
@@ -333,11 +373,12 @@ function WorkoutsPageContent() {
         setActiveSession({ protocol, workout });
         router.replace(`/treinos?sessao=${session.id}`);
       } catch (error) {
+        if (cancelled) return;
         sessionBootstrapRef.current = null;
         setPersistenceError(error instanceof Error ? error.message : "Não foi possível iniciar a sessão.");
       }
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [protocols, router, searchParams]);
 
   useEffect(() => {
@@ -436,7 +477,8 @@ function WorkoutsPageContent() {
 
   async function addProtocol(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const studentId = String(data.get("student"));
     if (!students.some((item) => item.id === studentId)) {
       setPersistenceError("Selecione explicitamente o aluno do protocolo.");
@@ -452,7 +494,7 @@ function WorkoutsPageContent() {
       setProtocols((current) => [protocol, ...current]);
       setNewProtocolOpen(false);
       setNewProtocolStudentId("");
-      event.currentTarget.reset();
+      form.reset();
     } catch (error) {
       setPersistenceError(error instanceof Error ? error.message : "Não foi possível criar o protocolo.");
     }
@@ -460,7 +502,9 @@ function WorkoutsPageContent() {
 
   function reconcileSession(session: TrainingSession) {
     setActiveSessionRecord(session);
-    setSessionExercises(exercisesFromSession(session));
+    const exercises = exercisesFromSession(session);
+    sessionExercisesRef.current = exercises;
+    setSessionExercises(exercises);
     setCompletedExercises(session.exercises.filter((item) => ["completed", "assumed_completed"].includes(item.status)).map((item) => item.id));
   }
 
@@ -496,7 +540,10 @@ function WorkoutsPageContent() {
     const status: TrainingSessionItemStatus = completed ? "pending" : "completed";
     setCompletedExercises((current) => completed ? current.filter((item) => item !== id) : [...current, id]);
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, executionStatus: status } : item));
-    await persistSessionMutation(() => updateSessionExercise(exercise.sessionExerciseId, { status }), "Não foi possível salvar o exercício.");
+    await persistSessionMutation(async () => {
+      if (!completed) await Promise.all((exercise.seriesConfigurations ?? []).filter((set) => set.id && !set.isRemoved).map((set) => updateSessionSet(set.id!, { status: "completed" })));
+      await updateSessionExercise(exercise.sessionExerciseId, { status });
+    }, "Não foi possível salvar o exercício.");
   }
 
   async function updateSessionExerciseStatus(id: string, status: TrainingSessionItemStatus) {
@@ -558,13 +605,14 @@ function WorkoutsPageContent() {
 
   async function adjustSessionLoad(id: string, delta: -2.5 | 2.5, seriesIndex?: number) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    const targetSet = exercise?.seriesConfigurations?.[seriesIndex ?? 0];
+    const visibleSets = exercise?.seriesConfigurations?.filter((set) => !set.isRemoved) ?? [];
+    const targetSet = visibleSets[seriesIndex ?? 0];
     if (!targetSet?.id) return;
     const nextLoad = adjustedLoad(targetSet.load, delta);
     setSessionExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
-      const configurations = seriesConfigurations(exercise).map((configuration, index) => {
-        if (seriesIndex !== undefined && index !== seriesIndex) return configuration;
+      const configurations = seriesConfigurations(exercise).map((configuration) => {
+        if (seriesIndex !== undefined && configuration.id !== targetSet.id) return configuration;
         return { ...configuration, load: adjustedLoad(configuration.load, delta) };
       });
       const load = configurations[0]?.load ?? adjustedLoad(exercise.load, delta);
@@ -575,14 +623,14 @@ function WorkoutsPageContent() {
 
   async function adjustSessionRepetitions(id: string, delta: -1 | 1, seriesIndex: number) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    const targetSet = exercise?.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
     if (!targetSet?.id) return;
     const currentReps = Number(targetSet.reps.match(/\d+(?:[.,]\d+)?/)?.[0]?.replace(",", ".") ?? 0);
     const actualReps = Math.max(0, currentReps + delta);
     setSessionExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
-      const configurations = seriesConfigurations(exercise).map((configuration, index) => {
-        if (index !== seriesIndex) return configuration;
+      const configurations = seriesConfigurations(exercise).map((configuration) => {
+        if (configuration.id !== targetSet.id) return configuration;
         const reps = configuration.reps.replace(/\d+/g, (value) => String(Math.max(1, Number(value) + delta)));
         return { ...configuration, reps };
       });
@@ -593,34 +641,79 @@ function WorkoutsPageContent() {
 
   async function updateSessionSeriesStatus(id: string, seriesIndex: number, status: TrainingSessionItemStatus) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    const targetSet = exercise?.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
     if (!targetSet?.id) return;
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
-      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, executionStatus: status } : set),
+      seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === targetSet.id ? { ...set, executionStatus: status } : set),
     } : item));
     await persistSessionMutation(() => updateSessionSet(targetSet.id!, { status }), "Não foi possível salvar o estado da série.");
   }
 
   async function updateSessionSeriesEffort(id: string, seriesIndex: number, value: string) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    const targetSet = exercise?.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
     if (!targetSet?.id) return;
     const parsed = value === "" ? null : Number(value.replace(",", "."));
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
-      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, actualRir: parsed } : set),
+      seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === targetSet.id ? { ...set, actualRir: parsed } : set),
     } : item));
     await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_rir: parsed }), "Não foi possível salvar o RIR.");
   }
 
   async function updateSessionSeriesMethod(id: string, seriesIndex: number, method: AdvancedMethod) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    const targetSet = exercise?.seriesConfigurations?.[seriesIndex];
+    const targetSet = exercise?.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
     if (!targetSet?.id) return;
     const methodToDb: Record<AdvancedMethod, string> = { "Convencional": "conventional", "Drop-set": "drop_set", "Rest-pause": "rest_pause", "Cluster set": "cluster", "Pirâmide": "pyramid", "Myo-reps": "myo_reps", "Bi-set": "bi_set" };
+    const blocks = defaultBlocks(method);
+    const actualBlocks = blocks?.map((reps, blockIndex) => ({ reps, load: targetSet.blockLoads?.[blockIndex] ?? targetSet.load, rir: null, status: "pending" as const }));
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, changed: true,
-      seriesConfigurations: item.seriesConfigurations?.map((set, index) => index === seriesIndex ? { ...set, method } : set),
+      seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === targetSet.id ? { ...set, method, blocks: blocks ? [...blocks] : undefined, actualBlocks } : set),
     } : item));
-    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_method: methodToDb[method] }), "Não foi possível salvar o método.");
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_method: methodToDb[method], actual_blocks: actualBlocks?.map((block) => ({ ...block, load: Number(block.load.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0) })) ?? [] }), "Não foi possível salvar o método.");
+  }
+
+  async function updateSessionSeriesBlock(id: string, seriesIndex: number, blockIndex: number, update: Partial<SessionMiniBlock>) {
+    let targetSetId: string | undefined;
+    let nextBlocks: SessionMiniBlock[] | undefined;
+    const nextExercises = sessionExercisesRef.current.map((item) => {
+      if (item.id !== id) return item;
+      const targetSet = item.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
+      if (!targetSet?.id) return item;
+      const visibleBlocks = targetSet.actualBlocks ?? targetSet.blocks?.map((reps, index) => ({ reps, load: targetSet.blockLoads?.[index] ?? targetSet.load, rir: targetSet.actualRir ?? null, status: "pending" as const })) ?? [];
+      if (!visibleBlocks.length || blockIndex < 0 || blockIndex >= visibleBlocks.length) return item;
+      targetSetId = targetSet.id;
+      nextBlocks = visibleBlocks.map((block, index) => index === blockIndex ? { ...block, ...update } : block);
+      return { ...item, changed: true,
+        seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === targetSet.id ? { ...set, actualBlocks: nextBlocks } : set),
+      };
+    });
+    if (!targetSetId || !nextBlocks) return;
+    sessionExercisesRef.current = nextExercises;
+    setSessionExercises(nextExercises);
+    const targetSet = { id: targetSetId };
+    const blocks = nextBlocks;
+    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { actual_blocks: blocks.map((block) => ({ reps: block.reps, load: Number(block.load.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0), rir: block.rir, status: block.status })) }), "Não foi possível salvar os blocos do método.");
+  }
+
+  async function changeSessionBlockCount(id: string, seriesIndex: number, direction: -1 | 1) {
+    let targetSetId: string | undefined;
+    let nextBlocks: SessionMiniBlock[] | undefined;
+    const nextExercises = sessionExercisesRef.current.map((item) => {
+      if (item.id !== id) return item;
+      const targetSet = item.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
+      const baseline = targetSet?.actualBlocks ?? targetSet?.blocks?.map((reps, index) => ({ reps, load: targetSet.blockLoads?.[index] ?? targetSet.load, rir: null, status: "pending" as const })) ?? [];
+      if (!targetSet?.id || !baseline.length) return item;
+      targetSetId = targetSet.id;
+      nextBlocks = [...baseline];
+      if (direction === 1 && nextBlocks.length < 12) nextBlocks.push({ ...nextBlocks.at(-1)!, status: "pending" });
+      if (direction === -1 && nextBlocks.length > 2) nextBlocks.pop();
+      return { ...item, changed: true, seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === targetSet.id ? { ...set, actualBlocks: nextBlocks } : set) };
+    });
+    if (!targetSetId || !nextBlocks) return;
+    sessionExercisesRef.current = nextExercises;
+    setSessionExercises(nextExercises);
+    await persistSessionMutation(() => updateSessionSet(targetSetId!, { actual_blocks: nextBlocks!.map((block) => ({ ...block, load: Number(block.load.replace(",", ".").match(/\d+(?:\.\d+)?/)?.[0] ?? 0) })) }), "Não foi possível salvar a quantidade de blocos.");
   }
 
   async function updateSessionExerciseNotes(id: string, notes: string) {
@@ -655,13 +748,6 @@ function WorkoutsPageContent() {
       exercises: workout.exercises.map((exercise) => ({ ...exercise, id: crypto.randomUUID() })),
       volume: workout.volume.map((item) => ({ ...item })),
     };
-  }
-
-  function updateProtocolDetails(protocolId: string, field: "name" | "objective" | "frequency" | "start" | "end", value: string | number) {
-    setProtocols((current) => current.map((item) => item.id === protocolId ? {
-      ...item,
-      [field]: value,
-    } : item));
   }
 
   function updatePeriodDetails(protocolId: string, periodId: string, field: "name" | "start" | "end" | "status", value: string) {
@@ -758,6 +844,7 @@ function WorkoutsPageContent() {
     setWorkoutDrafts(Object.fromEntries(periodWorkouts.map((item) => [item.id, item.exercises.map((exercise) => ({ ...exercise }))])));
     setDraftExercises(workout.exercises.map((exercise) => ({ ...exercise })));
     setExpandedEditorExercise(null);
+    setPeriodDetailsOpen(false);
     setEditingWorkoutDetails(existingWorkout ? null : workout.id);
   }
 
@@ -839,23 +926,131 @@ function WorkoutsPageContent() {
     setExpandedEditorExercise(null);
   }
 
-  function finishSession() { if (!activeSessionRecord) return; setIncompleteFinishOpen(true); }
+  function finishSession() {
+    if (!activeSessionRecord) return;
+    setIncompleteFinishOpen(true);
+  }
 
-  function relevantSessionChanges(session: TrainingSession): TrainingSessionPromotionSelection[] { return session.exercises.flatMap((exercise) => { const selected: TrainingSessionPromotionSelection[] = []; if (exercise.executionSource === "substituted") selected.push({ sessionExerciseId: exercise.id, changes: { exercise: true } }); if (exercise.sets.some((set) => set.isAdded || set.isRemoved)) selected.push({ sessionExerciseId: exercise.id, changes: { series: true } }); exercise.sets.filter((set) => !set.isRemoved).forEach((set) => { if (set.actualLoad != null && set.actualLoad !== set.plannedLoad) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { load: true } }); if (set.actualReps != null && (set.actualReps !== set.plannedRepsMin || set.actualReps !== set.plannedRepsMax)) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { reps: true } }); if (set.actualMethod != null && set.actualMethod !== set.plannedMethod) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { method: true } }); }); return selected; }); }
+  function relevantSessionChanges(session: TrainingSession): TrainingSessionPromotionSelection[] {
+    return session.exercises.flatMap((exercise) => {
+      const selected: TrainingSessionPromotionSelection[] = [];
+      if (exercise.executionSource === "substituted") selected.push({ sessionExerciseId: exercise.id, changes: { exercise: true } });
+      if (exercise.sets.some((set) => set.isAdded || set.isRemoved)) selected.push({ sessionExerciseId: exercise.id, changes: { series: true } });
+      exercise.sets.filter((set) => !set.isRemoved).forEach((set) => {
+        if (set.actualLoad != null && set.actualLoad !== set.plannedLoad) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { load: true } });
+        if (set.actualReps != null && (set.actualReps !== set.plannedRepsMin || set.actualReps !== set.plannedRepsMax)) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { reps: true } });
+        if (set.actualMethod != null && set.actualMethod !== set.plannedMethod) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { method: true } });
+        const plannedBlockLoads = set.plannedBlockLoads;
+        const blocksChanged = set.actualBlocks != null && (set.actualBlocks.length !== set.plannedBlocks.length || set.actualBlocks.some((block, index) => block.reps !== set.plannedBlocks[index] || block.load !== (plannedBlockLoads[index] ?? set.plannedLoad)));
+        if (blocksChanged) selected.push({ sessionExerciseId: exercise.id, sessionSetId: set.id, changes: { blocks: true } });
+      });
+      return selected;
+    });
+  }
 
-  function promotionDescription(item: TrainingSessionPromotionSelection) { const exercise = activeSessionRecord?.exercises.find((entry) => entry.id === item.sessionExerciseId); const set = exercise?.sets.find((entry) => entry.id === item.sessionSetId); if (!exercise) return { title: "Exercício", detail: "Alteração" }; if (item.changes.exercise) return { title: exercise.name, detail: "Exercício substituído" }; if (item.changes.series) { const planned = exercise.sets.filter((entry) => !entry.isAdded).length; const executed = exercise.sets.filter((entry) => !entry.isRemoved).length; return { title: exercise.name, detail: `S?ries: ${planned} ? ${executed}` }; } if (item.changes.load && set) return { title: exercise.name, detail: `Carga: ${set.plannedLoad ?? "?"} ${set.plannedLoadUnit ?? "kg"} ? ${set.actualLoad ?? "?"} ${set.actualLoadUnit ?? set.plannedLoadUnit ?? "kg"}` }; if (item.changes.reps && set) return { title: exercise.name, detail: `Repeti??es: ${sessionReps(set.plannedRepsMin, set.plannedRepsMax, null)} ? ${set.actualReps ?? "?"}` }; if (item.changes.method && set) return { title: exercise.name, detail: `M?todo: ${set.plannedMethod ?? "conventional"} ? ${set.actualMethod ?? "conventional"}` }; return { title: exercise.name, detail: "Alteração" }; }
+  function promotionDescription(item: TrainingSessionPromotionSelection) {
+    const exercise = activeSessionRecord?.exercises.find((entry) => entry.id === item.sessionExerciseId);
+    const set = exercise?.sets.find((entry) => entry.id === item.sessionSetId);
+    if (!exercise) return { title: "Exercício", detail: "Alteração" };
+    if (item.changes.exercise) return { title: `${exercise.baselineName} → ${exercise.name}`, detail: "Exercício substituído" };
+    if (item.changes.series) {
+      const planned = exercise.sets.filter((entry) => !entry.isAdded).length;
+      const executed = exercise.sets.filter((entry) => !entry.isRemoved).length;
+      return { title: exercise.name, detail: `Séries: ${planned} → ${executed}` };
+    }
+    if (item.changes.load && set) return { title: exercise.name, detail: `Carga: ${set.plannedLoad ?? "—"} ${set.plannedLoadUnit ?? "kg"} → ${set.actualLoad ?? "—"} ${set.actualLoadUnit ?? set.plannedLoadUnit ?? "kg"}` };
+    if (item.changes.reps && set) return { title: exercise.name, detail: `Repetições: ${sessionReps(set.plannedRepsMin, set.plannedRepsMax, null)} → ${set.actualReps ?? "—"}` };
+    if (item.changes.method && set) {
+      const names: Record<string, string> = { conventional: "Convencional", drop_set: "Drop-set", rest_pause: "Rest-pause", cluster: "Cluster set", pyramid: "Pirâmide", myo_reps: "Myo-reps", bi_set: "Bi-set" };
+      return { title: exercise.name, detail: `Método: ${names[set.plannedMethod ?? "conventional"] ?? set.plannedMethod} → ${names[set.actualMethod ?? "conventional"] ?? set.actualMethod}` };
+    }
+    if (item.changes.blocks && set) return { title: exercise.name, detail: `Blocos: ${set.plannedBlocks.length} → ${set.actualBlocks?.length ?? 0}` };
+    return { title: exercise.name, detail: "Alteração" };
+  }
 
-  function finishAndCompleteAll() { void prepareCompletion("assume_unmodified_as_planned"); }
+  function finishAndCompleteAll() {
+    void prepareCompletion("assume_unmodified_as_planned");
+  }
 
-  function finishPartially() { void prepareCompletion("partial"); }
+  function finishPartially() {
+    void prepareCompletion("partial");
+  }
 
-  async function prepareCompletion(mode: TrainingSessionCompletionMode) { if (!activeSessionRecord) return; try { await sessionMutationQueueRef.current; if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar."); const refreshed = await getTrainingSession(activeSessionRecord.id); const changes = relevantSessionChanges(refreshed); if (!changes.length) { void completeSession(mode); return; } setPromotionSelection(changes); setPromotionCompletionMode(mode); setIncompleteFinishOpen(false); setPromotionOpen(true); } catch (error) { setSessionPersistenceError(error instanceof Error ? error.message : "Não foi possível preparar a conclusão da sessão."); } }
+  async function prepareCompletion(mode: TrainingSessionCompletionMode) {
+    if (!activeSessionRecord) return;
+    try {
+      await sessionMutationQueueRef.current;
+      if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar.");
+      const refreshed = await getTrainingSession(activeSessionRecord.id);
+      const changes = relevantSessionChanges(refreshed);
+      if (!changes.length) { void completeSession(mode); return; }
+      setPromotionSelection(changes);
+      setPromotionCompletionMode(mode);
+      setIncompleteFinishOpen(false);
+      setPromotionOpen(true);
+    } catch (error) {
+      setSessionPersistenceError(error instanceof Error ? error.message : "Não foi possível preparar a conclusão da sessão.");
+    }
+  }
 
-  function closeCompletedSession() { setSessionExercises([]); setActiveSessionRecord(null); setActiveSession(null); sessionBootstrapRef.current = null; router.replace("/"); }
+  function closeCompletedSession() {
+    setSessionExercises([]); setActiveSessionRecord(null); setActiveSession(null); sessionBootstrapRef.current = null;
+    router.replace("/");
+  }
 
-  async function completeWithPromotion(mode: TrainingSessionCompletionMode, promote: boolean) { if (!activeSessionRecord) return; const sessionId = activeSessionRecord.id; setSessionCompleting(true); setSessionPersistenceError(""); try { await sessionMutationQueueRef.current; if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar."); const completed = ["completed", "partial"].includes(activeSessionRecord.status) ? await getTrainingSession(sessionId) : await completeTrainingSession(sessionId, mode); setActiveSessionRecord(completed); setSessionExercises(exercisesFromSession(completed)); if (!(["completed", "partial"].includes(completed.status))) throw new Error("O banco não confirmou a conclusão da sessão."); const selectedChanges = promotionSelection.filter((item) => Object.values(item.changes).some(Boolean)); if (promote && selectedChanges.length) await promoteTrainingSessionChanges(sessionId, selectedChanges); setIncompleteFinishOpen(false); setPromotionOpen(false); closeCompletedSession(); } catch (error) { const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão."; setSessionPersistenceError(message); setPersistenceError(message); } finally { setSessionCompleting(false); } }
+  async function completeWithPromotion(mode: TrainingSessionCompletionMode, promote: boolean) {
+    if (!activeSessionRecord) return;
+    const sessionId = activeSessionRecord.id;
+    setSessionCompleting(true); setSessionPersistenceError("");
+    try {
+      await sessionMutationQueueRef.current;
+      if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar.");
+      const completed = ["completed", "partial"].includes(activeSessionRecord.status)
+        ? await getTrainingSession(sessionId)
+        : await completeTrainingSession(sessionId, mode);
+      setActiveSessionRecord(completed);
+      setSessionExercises(exercisesFromSession(completed));
+      if (!(["completed", "partial"].includes(completed.status))) throw new Error("O banco não confirmou a conclusão da sessão.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão.";
+      setSessionPersistenceError(message);
+      setPersistenceError(message);
+      setSessionCompleting(false);
+      return;
+    }
+    const selectedChanges = promotionSelection.filter((item) => Object.values(item.changes).some(Boolean));
+    if (promote && selectedChanges.length) {
+      try { await promoteTrainingSessionChanges(sessionId, selectedChanges); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "Não foi possível atualizar os próximos treinos. A sessão realizada foi preservada.";
+        setSessionPersistenceError(message);
+        setPersistenceError(message);
+        setSessionCompleting(false);
+        return;
+      }
+    }
+    setIncompleteFinishOpen(false); setPromotionOpen(false); setSessionCompleting(false); closeCompletedSession();
+  }
 
-  async function completeSession(mode: TrainingSessionCompletionMode) { if (!activeSessionRecord) return; setSessionCompleting(true); setSessionPersistenceError(""); try { await sessionMutationQueueRef.current; if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar."); const completedSession = await completeTrainingSession(activeSessionRecord.id, mode); if (completedSession.status !== (mode === "partial" ? "partial" : "completed")) throw new Error("O status final confirmado pelo banco é inválido."); setIncompleteFinishOpen(false); closeCompletedSession(); } catch (error) { const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão."; setSessionPersistenceError(message); setPersistenceError(message); } finally { setSessionCompleting(false); } }
+  async function completeSession(mode: TrainingSessionCompletionMode, close = true) {
+    if (!activeSessionRecord) return;
+    setSessionCompleting(true);
+    setSessionPersistenceError("");
+    try {
+      await sessionMutationQueueRef.current;
+      if (sessionMutationFailedRef.current) throw new Error("Existem alterações que não foram salvas. Revise o erro antes de finalizar.");
+      const completedSession = await completeTrainingSession(activeSessionRecord.id, mode);
+      if (completedSession.status !== (mode === "partial" ? "partial" : "completed")) throw new Error("O status final confirmado pelo banco é inválido.");
+      setIncompleteFinishOpen(false); setPromotionOpen(false);
+      if (close) { setSessionExercises([]); setActiveSessionRecord(null); setActiveSession(null); sessionBootstrapRef.current = null; router.replace("/"); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível concluir a sessão.";
+      setSessionPersistenceError(message);
+      setPersistenceError(message);
+    } finally {
+      setSessionCompleting(false);
+    }
+  }
 
   function deleteWorkoutFromEditor(protocol: Protocol, workoutId: string) {
     const remaining = protocol.workouts.filter((workout) => workout.id !== workoutId);
@@ -898,7 +1093,8 @@ function WorkoutsPageContent() {
         if (index !== seriesIndex) return configuration;
         if (field === "method") {
           const method = value as AdvancedMethod;
-          return { ...configuration, method, blocks: defaultBlocks(method) };
+          const blocks = defaultBlocks(method);
+          return { ...configuration, method, blocks, blockLoads: blocks ? blocks.map(() => configuration.load) : undefined, actualBlocks: undefined };
         }
         return { ...configuration, [field]: value };
       });
@@ -921,15 +1117,30 @@ function WorkoutsPageContent() {
     }));
   }
 
+  function updateSeriesBlockLoad(id: string, seriesIndex: number, blockIndex: number, value: string) {
+    setDraftExercises((current) => current.map((exercise) => {
+      if (exercise.id !== id) return exercise;
+      const configurations = seriesConfigurations(exercise).map((configuration, index) => {
+        if (index !== seriesIndex) return configuration;
+        const blockLoads = [...(configuration.blockLoads ?? configuration.blocks?.map(() => configuration.load) ?? [])];
+        blockLoads[blockIndex] = value;
+        return { ...configuration, blockLoads };
+      });
+      return { ...exercise, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
+    }));
+  }
+
   function changeSeriesBlockCount(id: string, seriesIndex: number, direction: -1 | 1) {
     setDraftExercises((current) => current.map((exercise) => {
       if (exercise.id !== id) return exercise;
       const configurations = seriesConfigurations(exercise).map((configuration, index) => {
         if (index !== seriesIndex) return configuration;
         const blocks = [...(configuration.blocks ?? defaultBlocks(configuration.method) ?? [4, 4])];
-        if (direction === 1 && blocks.length < 6) blocks.push(blocks.at(-1) ?? 4);
+        const blockLoads = [...(configuration.blockLoads ?? blocks.map(() => configuration.load))];
+        if (direction === 1 && blocks.length < 12) { blocks.push(blocks.at(-1) ?? 4); blockLoads.push(blockLoads.at(-1) ?? configuration.load); }
         if (direction === -1 && blocks.length > 2) blocks.pop();
-        return { ...configuration, blocks };
+        if (direction === -1 && blockLoads.length > 2) blockLoads.pop();
+        return { ...configuration, blocks, blockLoads };
       });
       return { ...exercise, seriesConfigurations: configurations, prescription: formatSeriesPrescription(configurations) };
     }));
@@ -992,7 +1203,7 @@ function WorkoutsPageContent() {
   function addDraftExercise() {
     if (!exerciseCatalog.some((exercise) => exercise.name === exerciseToAdd)) return;
     const id = crypto.randomUUID();
-    setDraftExercises((current) => [...current, { id, name: exerciseToAdd, prescription: "1 × 8–12", sets: 1, reps: "8–12", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [8], methodSeries: [], seriesConfigurations: [{ method: "Convencional", reps: "8–12", load: "0 kg" }] }]);
+    setDraftExercises((current) => [...current, { id, name: exerciseToAdd, prescription: "1 × 10", sets: 1, reps: "10", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [10], methodSeries: [], seriesConfigurations: [{ method: "Convencional", reps: "10", load: "0 kg" }] }]);
     setExerciseToAdd("");
     setExerciseSuggestionsOpen(false);
   }
@@ -1000,7 +1211,7 @@ function WorkoutsPageContent() {
   function addExerciseToEditorWorkout(workoutId: string, exercises: Exercise[], selectedExercise = exerciseToAdd) {
     if (!exerciseCatalog.some((exercise) => exercise.name === selectedExercise)) return;
     const id = crypto.randomUUID();
-    const exercise: Exercise = { id, name: selectedExercise, prescription: "1 × 8–12", sets: 1, reps: "8–12", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [8], methodSeries: [], seriesConfigurations: [{ method: "Convencional", reps: "8–12", load: "0 kg" }] };
+    const exercise: Exercise = { id, name: selectedExercise, prescription: "1 × 10", sets: 1, reps: "10", load: "0 kg", rest: "60''", method: "Convencional", seriesReps: [10], methodSeries: [], seriesConfigurations: [{ method: "Convencional", reps: "10", load: "0 kg" }] };
     if (prescriptionEditor?.workoutId === workoutId) {
       setDraftExercises((current) => [...current, exercise]);
     } else {
@@ -1105,10 +1316,7 @@ function WorkoutsPageContent() {
             </header>
             <div className="sticky top-0 z-30 flex shrink-0 gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface-raised)] px-4 py-3 shadow-sm sm:px-6">{protocol.periods.map((period, index) => <div key={period.id} className={`flex shrink-0 overflow-hidden rounded-xl border ${period.id === protocol.activePeriodId ? "border-blue-500 bg-blue-500/10 text-blue-500" : "border-[var(--border)] bg-[var(--surface)]"}`}><button type="button" onClick={() => openPeriodEditor(protocol.id, period.id)} className="px-4 py-2 text-left text-xs"><strong className="block">{period.name || `Período ${index + 1}`}</strong><span className="mt-0.5 block text-[10px] text-[var(--muted)]">{period.start} · {period.end}</span></button><button type="button" disabled={protocol.periods.length === 1} onClick={() => setPeriodToDelete({ id: period.id, name: period.name || `Período ${index + 1}` })} className="grid w-9 place-items-center border-l border-inherit text-sm text-red-500 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Excluir ${period.name || `Período ${index + 1}`}`} title={protocol.periods.length === 1 ? "Crie outro período antes de excluir o único período do protocolo." : `Excluir ${period.name || `Período ${index + 1}`}`}>×</button></div>)}</div>
             {protocol.periods.length === 1 && <p className="shrink-0 border-b border-[var(--border)] bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300 sm:px-6">Para excluir o único período, crie outro período primeiro ou exclua o protocolo completo.</p>}
-            <div className="shrink-0 space-y-3 border-b border-[var(--border)] px-4 py-3 sm:px-6">
-              <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Dados gerais do protocolo</p><div className="mt-2 grid gap-3 sm:grid-cols-5"><label className="text-xs text-[var(--muted)]">Nome<input value={protocol.name ?? ""} onChange={(event) => updateProtocolDetails(protocol.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Objetivo<input value={protocol.objective} onChange={(event) => updateProtocolDetails(protocol.id, "objective", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Frequência<input type="number" min="1" max="7" value={protocol.frequency} onChange={(event) => updateProtocolDetails(protocol.id, "frequency", Math.max(1, Number(event.target.value)))} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={protocol.start} onChange={(event) => updateProtocolDetails(protocol.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término<input value={protocol.end} onChange={(event) => updateProtocolDetails(protocol.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label></div></div>
-              {(() => { const period = protocol.periods.find((item) => item.id === protocol.activePeriodId); if (!period) return null; return <div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Período selecionado</p><div className="mt-2 grid gap-3 sm:grid-cols-4"><label className="text-xs text-[var(--muted)]">Nome<input value={period.name} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={period.start} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término<input value={period.end} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Status<select value={period.status} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "status", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"><option>Rascunho</option><option>Programado</option><option>Ativo</option><option>Concluído</option></select></label></div></div>; })()}
-            </div>
+            <div className="shrink-0 border-b border-[var(--border)] px-4 py-3 sm:px-6">{(() => { const period = protocol.periods.find((item) => item.id === protocol.activePeriodId); if (!period) return null; return <div><button type="button" onClick={() => setPeriodDetailsOpen((open) => !open)} className="flex w-full items-center justify-between text-left"><span><span className="block text-xs font-semibold uppercase tracking-wider text-blue-500">Detalhes do período selecionado</span><span className="mt-1 block text-xs text-[var(--muted)]">{period.name} · {period.start} · {period.end}</span></span><span className={`transition-transform ${periodDetailsOpen ? "rotate-180" : ""}`}>⌄</span></button>{periodDetailsOpen && <div className="mt-3 grid gap-3 sm:grid-cols-4"><label className="text-xs text-[var(--muted)]">Nome<input value={period.name} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "name", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Início<input value={period.start} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "start", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Término<input value={period.end} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "end", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs text-[var(--muted)]">Status<select value={period.status} onChange={(event) => updatePeriodDetails(protocol.id, period.id, "status", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"><option>Rascunho</option><option>Programado</option><option>Ativo</option><option>Concluído</option></select></label></div>}</div>; })()}</div>
 
             <section className="min-h-0 flex-none overflow-visible p-4 sm:p-6"><div className="mb-4"><h3 className="font-semibold">Visão da semana</h3><p className="text-sm text-[var(--muted)]">Clique em um exercício para abrir ou recolher seus campos de prescrição.</p></div>
               <div className="overflow-x-auto pb-2"><div className="grid auto-cols-[310px] grid-flow-col items-start gap-4 xl:auto-cols-[minmax(300px,1fr)]">
@@ -1128,9 +1336,9 @@ function WorkoutsPageContent() {
                       const configurations = seriesConfigurations(exercise, sets);
                       const methodSummary = exerciseMethodSummary(exercise);
                       return <div key={exercise.id} className={`overflow-hidden rounded-xl border ${open ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}>
-                        <button type="button" onClick={() => { if (!active) selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(open ? null : exercise.id); }} className="flex w-full items-center gap-3 p-3 text-left"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {methodSummary}</span></span><span className={`transition-transform ${open ? "rotate-90" : ""}`}>›</span></button>
+                        <button type="button" onClick={() => { if (!active) selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(open ? null : exercise.id); }} className="flex w-full items-center gap-3 p-3 text-left"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exerciseSummary(exercise)} · {methodSummary}</span></span><span className={`transition-transform ${open ? "rotate-90" : ""}`}>›</span></button>
                         {open && <div className="border-t border-blue-500/20 p-3"><div><p className="text-[11px] font-semibold text-blue-500">Configuração individual das séries</p><p className="mt-0.5 text-[10px] leading-4 text-[var(--muted)]">{sets} {sets === 1 ? "série prescrita" : "séries prescritas"} · configure cada uma separadamente.</p></div><label className="mt-3 block text-[11px] text-[var(--muted)]">Descanso entre séries<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label>
-                          <div className="mt-3 space-y-2">{configurations.map((configuration, seriesIndex) => <div key={seriesIndex} className={`rounded-xl border p-2.5 ${configuration.method === "Convencional" ? "border-[var(--border)] bg-[var(--surface)]" : "border-violet-500/30 bg-violet-500/10"}`}><div className="flex items-center gap-2"><strong className="shrink-0 text-xs">Série {seriesIndex + 1}</strong><select aria-label={`Método da série ${seriesIndex + 1}`} value={configuration.method} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "method", event.target.value)} className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select><button type="button" aria-label={`Remover série ${seriesIndex + 1}`} onClick={() => removeSeriesFromExercise(exercise.id, seriesIndex)} disabled={configurations.length === 1} className="grid size-8 shrink-0 place-items-center rounded-lg border border-red-500/30 text-sm text-red-500 disabled:cursor-not-allowed disabled:opacity-30">×</button></div><div className="mt-2 grid grid-cols-2 gap-2"><label className="text-[10px] text-[var(--muted)]">Repetições<input aria-label={`Repetições da série ${seriesIndex + 1}`} value={configuration.reps} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "reps", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label><label className="text-[10px] text-[var(--muted)]">Carga<input aria-label={`Carga da série ${seriesIndex + 1}`} value={configuration.load} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "load", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label></div>{configuration.blocks && <div className="mt-2 rounded-lg border border-violet-500/20 bg-[var(--background)] p-2"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-semibold text-violet-500">Blocos de repetições</span><div className="flex gap-1"><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, -1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">−</button><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, 1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">＋</button></div></div><div className="mt-2 flex items-center gap-1 overflow-x-auto">{configuration.blocks.map((block, blockIndex) => <div key={blockIndex} className="flex items-center gap-1">{blockIndex > 0 && <span className="font-semibold text-violet-500">＋</span>}<select aria-label={`Bloco ${blockIndex + 1} da série ${seriesIndex + 1}`} value={block} onChange={(event) => updateSeriesBlock(exercise.id, seriesIndex, blockIndex, Number(event.target.value))} className="h-8 w-12 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-1 text-center text-xs">{Array.from({length:20},(_,value)=>value+1).map((value)=><option key={value}>{value}</option>)}</select></div>)}</div></div>}</div>)}</div>
+                          <div className="mt-3 space-y-2">{configurations.map((configuration, seriesIndex) => <div key={seriesIndex} className={`rounded-xl border p-2.5 ${configuration.method === "Convencional" ? "border-[var(--border)] bg-[var(--surface)]" : "border-violet-500/30 bg-violet-500/10"}`}><div className="flex items-center gap-2"><strong className="shrink-0 text-xs">Série {seriesIndex + 1}</strong><select aria-label={`Método da série ${seriesIndex + 1}`} value={configuration.method} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "method", event.target.value)} className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select><button type="button" aria-label={`Remover série ${seriesIndex + 1}`} onClick={() => removeSeriesFromExercise(exercise.id, seriesIndex)} disabled={configurations.length === 1} className="grid size-8 shrink-0 place-items-center rounded-lg border border-red-500/30 text-sm text-red-500 disabled:cursor-not-allowed disabled:opacity-30">×</button></div>{!configuration.blocks?.length && <div className="mt-2 grid grid-cols-2 gap-2"><label className="text-[10px] text-[var(--muted)]">Repetições<input aria-label={`Repetições da série ${seriesIndex + 1}`} value={configuration.reps} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "reps", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label><label className="text-[10px] text-[var(--muted)]">Carga<input aria-label={`Carga da série ${seriesIndex + 1}`} value={configuration.load} onChange={(event) => updateSeriesConfiguration(exercise.id, seriesIndex, "load", event.target.value)} className="mt-1 h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs" /></label></div>}{configuration.blocks?.length ? <div className="mt-2 rounded-lg border border-violet-500/20 bg-[var(--background)] p-2"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-semibold text-violet-500">Blocos prescritos</span><div className="flex gap-1"><button type="button" disabled={configuration.blocks.length <= 2} onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, -1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs disabled:opacity-30">−</button><button type="button" onClick={() => changeSeriesBlockCount(exercise.id, seriesIndex, 1)} className="grid size-6 place-items-center rounded border border-[var(--border)] text-xs">＋</button></div></div><div className="mt-2 space-y-1">{configuration.blocks.map((block, blockIndex) => <div key={blockIndex} className="grid grid-cols-[52px_1fr_1fr] items-center gap-2 text-xs"><span className="text-violet-700">Bloco {blockIndex + 1}</span><input aria-label={`Repetições do bloco ${blockIndex + 1} da série ${seriesIndex + 1}`} type="number" min="1" value={block} onChange={(event) => updateSeriesBlock(exercise.id, seriesIndex, blockIndex, Number(event.target.value))} className="h-8 min-w-0 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-center" /><input aria-label={`Carga do bloco ${blockIndex + 1} da série ${seriesIndex + 1}`} value={configuration.blockLoads?.[blockIndex] ?? configuration.load} onChange={(event) => updateSeriesBlockLoad(exercise.id, seriesIndex, blockIndex, event.target.value)} className="h-8 min-w-0 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 text-center" /></div>)}</div></div> : null}</div>)}</div>
                           <button type="button" onClick={() => addSeriesToExercise(exercise.id)} className="mt-3 w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">＋ Adicionar série abaixo</button><div className="mt-3 flex justify-end gap-1"><button type="button" onClick={() => moveDraftExercise(index,-1)} disabled={index===0} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index,1)} disabled={index===draftExercises.length-1} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current)=>current.filter((entry)=>entry.id!==exercise.id))} className="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-500/10">Excluir</button></div>
                         </div>}
                       </div>;
@@ -1187,7 +1395,7 @@ function WorkoutsPageContent() {
                 {editorWorkouts.map((item) => <article key={item.id} className={`rounded-2xl border p-3 ${item.id === activeWorkout.id ? "border-blue-500 bg-blue-500/5" : "border-[var(--border)] bg-[var(--background)]"}`}>
                   <div className="flex items-start justify-between gap-2"><button type="button" onClick={() => selectEditorWorkout(protocol.id, item.id)} className="min-w-0 text-left"><strong className="block truncate">{item.name}</strong><span className="text-xs text-[var(--muted)]">{item.focus}</span></button><Badge tone={item.id === activeWorkout.id ? "info" : "neutral"}>{item.duration} min</Badge></div>
                   <button type="button" onClick={() => setVolumeView({ scope: "workout", workoutId: item.id })} className="mt-3 flex w-full items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span>▥ {item.volume.reduce((total, volume) => total + volume.sets, 0).toLocaleString("pt-BR")} séries</span><span className="text-blue-500">{item.volume.length} grupos ›</span></button>
-                  <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => <button key={exercise.id} type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(exercise.id); }} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${item.id === activeWorkout.id && expandedEditorExercise === exercise.id ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load}</span></span><span className="text-[var(--muted)]">›</span></button>)}</div>
+                  <div className="mt-3 space-y-2">{item.exercises.map((exercise, index) => <button key={exercise.id} type="button" onClick={() => { selectEditorWorkout(protocol.id, item.id); setExpandedEditorExercise(exercise.id); }} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${item.id === activeWorkout.id && expandedEditorExercise === exercise.id ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exerciseSummary(exercise)}</span></span><span className="text-[var(--muted)]">›</span></button>)}</div>
                   {item.exercises.length === 0 && <p className="mt-3 rounded-xl border border-dashed border-[var(--border)] p-4 text-center text-xs text-[var(--muted)]">Treino sem exercícios</p>}
                 </article>)}
               </div></div>
@@ -1203,7 +1411,7 @@ function WorkoutsPageContent() {
                   const seriesReps = repetitionsBySeries(exercise, sets);
                   const selectedMethodSeries = exercise.methodSeries ?? [];
                   return <article key={exercise.id} className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
-                    <div className="flex items-center gap-2 p-3"><button type="button" onClick={() => setExpandedEditorExercise(isOpen ? null : exercise.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><span className="grid size-8 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exercise.prescription} · {exercise.load} · {method}</span></span><span className={`transition-transform ${isOpen ? "rotate-90" : ""}`}>›</span></button><button type="button" onClick={() => moveDraftExercise(index, -1)} disabled={index === 0} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index, 1)} disabled={index === draftExercises.length - 1} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current) => current.filter((item) => item.id !== exercise.id))} className="grid size-8 place-items-center rounded-lg text-red-500 hover:bg-red-500/10">×</button></div>
+                    <div className="flex items-center gap-2 p-3"><button type="button" onClick={() => setExpandedEditorExercise(isOpen ? null : exercise.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><span className="grid size-8 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><span className="min-w-0 flex-1"><strong className="block truncate">{exercise.name}</strong><span className="text-xs text-[var(--muted)]">{exerciseSummary(exercise)} · {method}</span></span><span className={`transition-transform ${isOpen ? "rotate-90" : ""}`}>›</span></button><button type="button" onClick={() => moveDraftExercise(index, -1)} disabled={index === 0} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30">↑</button><button type="button" onClick={() => moveDraftExercise(index, 1)} disabled={index === draftExercises.length - 1} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30">↓</button><button type="button" onClick={() => setDraftExercises((current) => current.filter((item) => item.id !== exercise.id))} className="grid size-8 place-items-center rounded-lg text-red-500 hover:bg-red-500/10">×</button></div>
                     {isOpen && <div className="border-t border-[var(--border)] p-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><label className="text-xs text-[var(--muted)]">Séries<select value={sets} onChange={(event) => updateDraftExercisePrescription(exercise.id, "sets", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]">{[1,2,3,4,5,6].map((value) => <option key={value} value={value}>{value}×</option>)}</select></label><label className="text-xs text-[var(--muted)]">Repetições<input value={exercise.reps ?? repetitionsFromPrescription(exercise.prescription)} onChange={(event) => updateDraftExercisePrescription(exercise.id, "reps", event.target.value)} disabled={method !== "Convencional"} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm disabled:opacity-50" /></label><label className="text-xs text-[var(--muted)]">Carga<input value={exercise.load} onChange={(event) => updateDraftExercise(exercise.id, "load", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" /></label><label className="text-xs text-[var(--muted)]">Descanso<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm">{["30''","45''","60''","1'30''","2'00''","2'30''","3'00''"].map((value) => <option key={value}>{value}</option>)}</select></label></div><label className="mt-3 block text-xs text-[var(--muted)]">Método<select value={method} onChange={(event) => updateDraftMethod(exercise.id, event.target.value as AdvancedMethod)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm">{["Convencional","Drop-set","Rest-pause","Cluster set","Pirâmide","Myo-reps","Bi-set"].map((value) => <option key={value}>{value}</option>)}</select></label>
                       {method !== "Convencional" && <div className="mt-3 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold text-blue-500">Configuração por série</p><p className="mt-1 text-xs text-[var(--muted)]">{method === "Pirâmide" ? "Defina as repetições de cada etapa." : "Toque na série para aplicar ou remover o método."}</p></div><Badge tone="info">{method}</Badge></div><div className="mt-4 flex items-center gap-2 overflow-x-auto pb-1">{seriesReps.map((repetitions, seriesIndex) => { const applied = method === "Pirâmide" || selectedMethodSeries.includes(seriesIndex); return <div key={seriesIndex} className="flex shrink-0 items-center gap-2">{seriesIndex > 0 && <span className="text-[var(--muted)]">—</span>}<div className={`w-24 rounded-xl border p-2 text-center ${applied ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}><button type="button" onClick={() => toggleMethodSeries(exercise.id, seriesIndex)} disabled={method === "Pirâmide"} className="w-full text-[11px] font-semibold"><span className="block">Série {seriesIndex + 1}</span><span className={`block ${applied ? "text-blue-500" : "text-[var(--muted)]"}`}>{applied ? method : "Normal"}</span></button><select value={repetitions} onChange={(event) => updateSeriesRepetitions(exercise.id, seriesIndex, Number(event.target.value))} className="mt-2 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm font-semibold">{Array.from({ length: 20 }, (_, value) => value + 1).map((value) => <option key={value}>{value}</option>)}</select></div></div>; })}</div>{["Drop-set","Rest-pause","Myo-reps"].includes(method) && <p className="mt-3 text-xs text-[var(--muted)]">Aplicado inicialmente à última série; selecione no máximo duas.</p>}</div>}
                     </div>}
@@ -1225,7 +1433,7 @@ function WorkoutsPageContent() {
         const previewVolume = calculateWorkoutVolume(draftExercises, exerciseCatalog);
         return <div className="fixed inset-0 z-[65] overflow-y-auto bg-slate-950/90 p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="prescription-editor-title"><div className="mx-auto my-2 w-full max-w-6xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl"><header className="sticky top-0 z-10 flex items-start justify-between gap-4 rounded-t-2xl border-b border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Editor de prescrição</p><h2 id="prescription-editor-title" className="mt-1 text-xl font-semibold">{protocol.student}</h2><p className="mt-1 text-sm text-[var(--muted)]">{protocol.objective} · {protocol.frequency}× por semana</p></div><button type="button" onClick={() => setPrescriptionEditor(null)} className="grid size-9 shrink-0 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></header>
           <div className="grid gap-5 p-4 sm:p-6 lg:grid-cols-[1.5fr_1fr]">
-            <section><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><label className="text-sm font-medium">Treino<select value={workout.id} onChange={(event) => selectEditorWorkout(protocol.id, event.target.value)} className="mt-2 h-11 w-full min-w-52 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{protocol.workouts.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.focus}</option>)}</select></label><div className="flex flex-1 flex-col gap-2 sm:flex-row sm:justify-end"><label className="min-w-0 flex-1 text-sm font-medium">Buscar exercício<input list="prescription-exercise-options" value={exerciseToAdd} onChange={(event) => setExerciseToAdd(event.target.value)} placeholder="Comece a digitar o nome" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-sm outline-none focus:border-blue-500" /><datalist id="prescription-exercise-options">{exerciseCatalog.map((exercise) => <option key={exercise.name} value={exercise.name} />)}</datalist></label><Button className="sm:mb-0" onClick={addDraftExercise}>＋ Adicionar</Button></div></div>
+            <section><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><label className="text-sm font-medium">Treino<select value={workout.id} onChange={(event) => selectEditorWorkout(protocol.id, event.target.value)} className="mt-2 h-11 w-full min-w-52 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{protocol.workouts.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.focus}</option>)}</select></label><div className="flex flex-1 flex-col gap-2 sm:flex-row sm:justify-end"><label className="min-w-0 flex-1 text-sm font-medium">Buscar exercício<input list="prescription-exercise-options" value={exerciseToAdd} onChange={(event) => setExerciseToAdd(event.target.value)} placeholder="Comece a digitar o nome" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 text-base outline-none focus:border-blue-500 sm:text-sm" /><datalist id="prescription-exercise-options">{exerciseCatalog.map((exercise) => <option key={exercise.name} value={exercise.name} />)}</datalist></label><Button className="sm:mb-0" onClick={addDraftExercise}>＋ Adicionar</Button></div></div>
               <div className="mt-5 space-y-3">{draftExercises.map((exercise, index) => { const method = exercise.method ?? "Convencional"; const configuration = methodConfiguration(method); const sets = exercise.sets ?? seriesFromPrescription(exercise.prescription); const seriesReps = repetitionsBySeries(exercise, sets); const selectedMethodSeries = exercise.methodSeries ?? []; return <div key={exercise.id} className="rounded-2xl border border-[var(--border)] bg-[var(--background)] p-4"><div className="flex items-center gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-full bg-blue-500/10 text-xs font-semibold text-blue-500">{index + 1}</span><h3 className="min-w-0 flex-1 truncate font-semibold">{exercise.name}</h3><button type="button" onClick={() => moveDraftExercise(index, -1)} disabled={index === 0} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30" aria-label={`Mover ${exercise.name} para cima`}>↑</button><button type="button" onClick={() => moveDraftExercise(index, 1)} disabled={index === draftExercises.length - 1} className="grid size-8 place-items-center rounded-lg border border-[var(--border)] disabled:opacity-30" aria-label={`Mover ${exercise.name} para baixo`}>↓</button><button type="button" onClick={() => setDraftExercises((current) => current.filter((item) => item.id !== exercise.id))} className="grid size-8 place-items-center rounded-lg text-red-500 hover:bg-red-500/10" aria-label={`Remover ${exercise.name}`}>×</button></div><div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4"><label className="text-xs font-medium text-[var(--muted)]">Séries<select value={sets} onChange={(event) => updateDraftExercisePrescription(exercise.id, "sets", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]">{[1, 2, 3, 4, 5, 6].map((series) => <option key={series} value={series}>{series}×</option>)}</select></label><label className="text-xs font-medium text-[var(--muted)]">Repetições<input value={exercise.reps ?? repetitionsFromPrescription(exercise.prescription)} onChange={(event) => updateDraftExercisePrescription(exercise.id, "reps", event.target.value)} placeholder="Ex.: 10–12" disabled={method !== "Convencional"} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)] disabled:opacity-50" /></label><label className="text-xs font-medium text-[var(--muted)]">Carga<input value={exercise.load} onChange={(event) => updateDraftExercise(exercise.id, "load", event.target.value)} placeholder="Ex.: 30 kg" className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]" /></label><label className="text-xs font-medium text-[var(--muted)]">Descanso<select value={exercise.rest ?? "60''"} onChange={(event) => updateDraftExercise(exercise.id, "rest", event.target.value)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]">{["30''", "45''", "60''", "1'30''", "2'00''", "2'30''", "3'00''"].map((rest) => <option key={rest}>{rest}</option>)}</select></label></div><label className="mt-3 block text-xs font-medium text-[var(--muted)]">Método<select value={method} onChange={(event) => updateDraftMethod(exercise.id, event.target.value as AdvancedMethod)} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]"><option>Convencional</option><option>Drop-set</option><option>Rest-pause</option><option>Cluster set</option><option>Pirâmide</option><option>Myo-reps</option><option>Bi-set</option></select></label>{method !== "Convencional" && <div className="mt-3 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><div className="flex items-center justify-between gap-3"><div><p className="text-xs font-semibold text-blue-500">Configuração por série</p><p className="mt-1 text-xs text-[var(--muted)]">{method === "Pirâmide" ? "Defina as repetições de cada etapa." : "Toque na série para aplicar ou remover o método."}</p></div><Badge tone="info">{method}</Badge></div><div className="mt-4 flex items-center gap-2 overflow-x-auto pb-1">{seriesReps.map((repetitions, seriesIndex) => { const methodApplied = method === "Pirâmide" || selectedMethodSeries.includes(seriesIndex); return <div key={seriesIndex} className="flex shrink-0 items-center gap-2">{seriesIndex > 0 && <span className="text-[var(--muted)]">—</span>}<div className={`w-24 rounded-xl border p-2 text-center transition ${methodApplied ? "border-blue-500 bg-blue-500/10" : "border-[var(--border)] bg-[var(--surface)]"}`}><button type="button" onClick={() => toggleMethodSeries(exercise.id, seriesIndex)} disabled={method === "Pirâmide"} className="w-full text-[11px] font-semibold"><span className="block">Série {seriesIndex + 1}</span><span className={`mt-0.5 block ${methodApplied ? "text-blue-500" : "text-[var(--muted)]"}`}>{methodApplied ? method : "Normal"}</span></button><select value={repetitions} onChange={(event) => updateSeriesRepetitions(exercise.id, seriesIndex, Number(event.target.value))} className="mt-2 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-sm font-semibold">{Array.from({ length: 20 }, (_, repetitionIndex) => repetitionIndex + 1).map((value) => <option key={value}>{value}</option>)}</select><span className="mt-1 block text-[10px] text-[var(--muted)]">repetições</span></div></div>; })}</div>{["Drop-set", "Rest-pause", "Myo-reps"].includes(method) && <p className="mt-3 text-xs text-[var(--muted)]">Por padrão, o método é aplicado à última série. É possível selecionar no máximo duas séries.</p>}</div>}{configuration && <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3"><label className="text-xs font-medium text-[var(--muted)]">{configuration.rounds}<select value={exercise.methodRounds ?? 1} onChange={(event) => updateDraftExerciseRounds(exercise.id, Number(event.target.value))} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]">{[1, 2, 3, 4, 5, 6].map((round) => <option key={round}>{round}</option>)}</select></label><label className="text-xs font-medium text-[var(--muted)]">{configuration.value}<input value={exercise.methodValue ?? ""} onChange={(event) => updateDraftExercise(exercise.id, "methodValue", event.target.value)} placeholder={configuration.placeholder} className="mt-1.5 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--foreground)]" /></label></div>}</div>; })}{draftExercises.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] p-8 text-center"><p className="font-semibold">Treino vazio</p><p className="mt-1 text-sm text-[var(--muted)]">Escolha um exercício da biblioteca para começar.</p></div>}</div>
             </section>
             <aside className="h-fit rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 sm:p-5 lg:sticky lg:top-28"><div className="flex items-end justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-500">Prévia automática</p><h3 className="mt-1 font-semibold">Volume do treino</h3></div><Badge tone="info">{previewVolume.reduce((total, item) => total + item.sets, 0).toLocaleString("pt-BR")} séries</Badge></div><div className="mt-5 space-y-4">{previewVolume.map((item) => { const maximum = Math.max(...previewVolume.map((volume) => volume.sets), 1); return <div key={item.muscle}><div className="mb-1.5 flex justify-between gap-3 text-sm"><span>{item.muscle}</span><strong>{item.sets.toLocaleString("pt-BR")}</strong></div><div className="h-3 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" style={{ width: `${item.sets / maximum * 100}%` }} /></div></div>; })}{previewVolume.length === 0 && <p className="text-sm text-[var(--muted)]">Adicione exercícios classificados para visualizar o volume.</p>}</div><p className="mt-5 border-t border-blue-500/15 pt-4 text-xs leading-5 text-[var(--muted)]">O gráfico é atualizado enquanto você altera séries ou exercícios. Os valores consideram músculos principais e secundários ponderados.</p></aside>
@@ -1236,11 +1444,11 @@ function WorkoutsPageContent() {
 
       {workoutToRemove && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="remove-workout-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-red-500/10 text-xl text-red-500">×</div><h2 id="remove-workout-title" className="mt-4 text-xl font-semibold">Remover {workoutToRemove.workout.name}?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">O treino será retirado deste protocolo. Sessões já realizadas e seus históricos não serão apagados.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="ghost" onClick={() => setWorkoutToRemove(null)}>Cancelar</Button><Button className="bg-red-600 hover:bg-red-500" onClick={removeWorkout}>Remover treino</Button></div></Card></div>}
 
-      {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} sessionNotes={activeSessionRecord?.notes} persistenceError={sessionPersistenceError} isSaving={pendingSessionMutations > 0} isCompleting={sessionCompleting} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onUpdateExerciseStatus={updateSessionExerciseStatus} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onUpdateSeriesStatus={updateSessionSeriesStatus} onUpdateSeriesEffort={updateSessionSeriesEffort} onUpdateSeriesMethod={updateSessionSeriesMethod} onUpdateExerciseNotes={updateSessionExerciseNotes} onUpdateSessionNotes={updateActiveSessionNotes} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExerciseValue} onFinish={finishSession} />}
+      {activeSession && <SessionPanel student={activeSession.protocol.student} workoutName={activeSession.workout.name} focus={activeSession.workout.focus} exercises={sessionExercises} completedIds={completedExercises} sessionNotes={activeSessionRecord?.notes} persistenceError={sessionPersistenceError} isSaving={pendingSessionMutations > 0} isCompleting={sessionCompleting} swappingExerciseId={swappingExerciseId} compatibleNames={compatibleExerciseNames} onClose={() => setActiveSession(null)} onToggleComplete={toggleExercise} onUpdateExerciseStatus={updateSessionExerciseStatus} onAdjustLoad={adjustSessionLoad} onAdjustRepetitions={adjustSessionRepetitions} onUpdateSeriesStatus={updateSessionSeriesStatus} onUpdateSeriesEffort={updateSessionSeriesEffort} onUpdateSeriesMethod={updateSessionSeriesMethod} onUpdateSeriesBlock={updateSessionSeriesBlock} onChangeSeriesBlockCount={changeSessionBlockCount} onUpdateExerciseNotes={updateSessionExerciseNotes} onUpdateSessionNotes={updateActiveSessionNotes} onChangeSeries={changeSessionSeries} onToggleSwap={(id) => setSwappingExerciseId((current) => current === id ? null : id)} onUpdateExercise={updateSessionExerciseValue} onFinish={finishSession} />}
 
-      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><div className="grid size-12 place-items-center rounded-2xl bg-blue-500/10 text-xl text-blue-500">✓</div><h2 id="incomplete-finish-title" className="mt-4 text-xl font-semibold">Como concluir a sessão?</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">No modo conforme planejado, itens não alterados e não pulados serão registrados como execução presumida. Faixas de repetições permanecem como faixas, sem inventar um valor exato.</p>{sessionPersistenceError && <p role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs font-medium text-red-600">{sessionPersistenceError}</p>}<div className="mt-6 space-y-2"><Button className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishAndCompleteAll}>{sessionCompleting ? "Finalizando…" : "Executado conforme planejado"}</Button><Button variant="secondary" className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishPartially}>Concluir somente o confirmado</Button><Button variant="ghost" className="w-full" disabled={sessionCompleting} onClick={() => setIncompleteFinishOpen(false)}>Voltar à sessão</Button></div></Card></div>}
+      {incompleteFinishOpen && activeSession && <div className="fixed inset-0 z-[72] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="incomplete-finish-title"><Card className="w-full max-w-md"><h2 id="incomplete-finish-title" className="text-xl font-semibold">Como deseja finalizar o treino?</h2><div className="mt-4 space-y-3 text-sm"><Button className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishAndCompleteAll}>{sessionCompleting ? "Finalizando…" : "Considerar o treino completo"}</Button><p className="text-xs text-[var(--muted)]">Exercícios e séries não marcados como pulados serão considerados realizados conforme a prescrição.</p><Button variant="secondary" className="w-full" disabled={sessionCompleting || pendingSessionMutations > 0} onClick={finishPartially}>Finalizar apenas o que foi realizado</Button><p className="text-xs text-[var(--muted)]">Somente exercícios e séries confirmados serão contabilizados nesta sessão.</p></div><Button variant="ghost" className="mt-4 w-full" disabled={sessionCompleting} onClick={() => setIncompleteFinishOpen(false)}>Voltar ao treino</Button></Card></div>}
 
-      {promotionOpen && activeSessionRecord && <div className="fixed inset-0 z-[73] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><Card className="w-full max-w-md"><h2 id="promotion-title" className="text-xl font-semibold">Alterações encontradas</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Marque somente os ajustes que devem virar uma nova versão da prescrição. A sessão continuará ligada ao treino executado.</p><div className="mt-4 max-h-56 space-y-2 overflow-y-auto">{promotionSelection.map((item, index) => { const summary = promotionDescription(item); const change = Object.keys(item.changes)[0] as keyof TrainingSessionPromotionSelection["changes"]; return <label key={`${item.sessionExerciseId}:${item.sessionSetId ?? "exercise"}:${change}`} className="flex gap-3 rounded-xl border border-[var(--border)] p-3 text-sm"><input type="checkbox" checked={Boolean(item.changes[change])} onChange={(event) => setPromotionSelection((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, changes: { ...entry.changes, [change]: event.target.checked } } : entry))} /><span><strong>{summary.title}</strong><br /><span className="text-xs text-[var(--muted)]">{summary.detail}</span></span></label>; })}</div><div className="mt-6 space-y-2"><Button className="w-full" disabled={sessionCompleting} onClick={() => void completeWithPromotion(promotionCompletionMode, true)}>Aplicar aos próximos treinos</Button><Button variant="secondary" className="w-full" disabled={sessionCompleting} onClick={() => void completeWithPromotion(promotionCompletionMode, false)}>Somente nesta sessão</Button><Button variant="ghost" className="w-full" disabled={sessionCompleting} onClick={() => { setPromotionOpen(false); setIncompleteFinishOpen(true); }}>Voltar</Button></div></Card></div>}
+      {promotionOpen && activeSessionRecord && <div className="fixed inset-0 z-[73] grid place-items-center bg-slate-950/85 p-4" role="dialog" aria-modal="true" aria-labelledby="promotion-title"><Card className="w-full max-w-md"><h2 id="promotion-title" className="text-xl font-semibold">Alterações encontradas</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Marque somente os ajustes que devem virar uma nova versão da prescrição. A sessão continuará ligada ao treino executado.</p><div className="mt-4 max-h-56 space-y-2 overflow-y-auto">{promotionSelection.map((item, index) => { const summary = promotionDescription(item); const change = Object.keys(item.changes)[0]; return <label key={`${item.sessionExerciseId}:${item.sessionSetId ?? "exercise"}:${change}`} className="flex gap-3 rounded-xl border border-[var(--border)] p-3 text-sm"><input type="checkbox" checked={Object.values(item.changes).some(Boolean)} onChange={(event) => setPromotionSelection((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, changes: { ...entry.changes, [change]: event.target.checked } } : entry))} /><span><strong>{summary.title}</strong><br /><span className="text-xs text-[var(--muted)]">{summary.detail}</span></span></label>; })}</div><div className="mt-6 space-y-2"><Button className="w-full" disabled={sessionCompleting} onClick={() => void completeWithPromotion(promotionCompletionMode, true)}>Aplicar aos próximos treinos</Button><Button variant="secondary" className="w-full" disabled={sessionCompleting} onClick={() => void completeWithPromotion(promotionCompletionMode, false)}>Somente nesta sessão</Button><Button variant="ghost" className="w-full" disabled={sessionCompleting} onClick={() => { setPromotionOpen(false); setIncompleteFinishOpen(true); }}>Voltar</Button></div></Card></div>}
 
     </MainLayout>
   );

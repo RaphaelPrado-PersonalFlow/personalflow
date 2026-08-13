@@ -15,6 +15,9 @@ export type SeriesConfiguration = {
   reps: string;
   load: string;
   blocks?: number[];
+  /** Per-block prescribed load. The reps array remains the stable prescribed structure. */
+  blockLoads?: string[];
+  actualBlocks?: Array<{ reps: number; load: string; rir: number | null; status: "pending" | "completed" | "skipped" }>;
   executionStatus?: "pending" | "completed" | "assumed_completed" | "partial" | "skipped";
   actualRir?: number | null;
   actualRpe?: number | null;

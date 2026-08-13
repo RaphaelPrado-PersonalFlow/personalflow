@@ -11,11 +11,18 @@ export type TrainingSessionSet = {
   isRemoved: boolean;
   method: string;
   plannedMethod: string | null;
+  plannedBlocks: number[];
+  plannedBlockLoads: Array<number | null>;
+  actualBlocks: Array<{ reps: number; load: number | null; rir: number | null; status: "pending" | "completed" | "skipped" }> | null;
   actualMethod: string | null;
   plannedRepsMin: number | null;
   plannedRepsMax: number | null;
   plannedLoad: number | null;
   plannedLoadUnit: string | null;
+  plannedRestAfterSeconds: number | null;
+  operationalLoad: number | null;
+  operationalLoadUnit: string | null;
+  operationalLoadSource: "last_execution" | "planned" | "empty";
   plannedRir: number | null;
   plannedRpe: number | null;
   actualReps: number | null;
@@ -30,7 +37,7 @@ export type TrainingSessionSet = {
 export type TrainingSessionPromotionSelection = {
   sessionExerciseId: string;
   sessionSetId?: string;
-  changes: { load?: boolean; reps?: boolean; method?: boolean; series?: boolean; exercise?: boolean };
+  changes: { load?: boolean; reps?: boolean; method?: boolean; series?: boolean; exercise?: boolean; blocks?: boolean };
 };
 
 export type TrainingSessionExercise = {
@@ -40,6 +47,7 @@ export type TrainingSessionExercise = {
   status: TrainingSessionItemStatus;
   executionSource: "prescribed" | "substituted" | "added";
   name: string;
+  baselineName: string;
   exerciseSource: "system" | "custom";
   systemExerciseId?: number;
   customExerciseId?: number;
