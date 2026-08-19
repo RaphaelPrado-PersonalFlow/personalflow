@@ -30,7 +30,7 @@ export async function createStudent(input: {
   full_name: string;
   phone: string;
   email: string;
-  cpf: string;
+  cpf: string | null;
   goal: string;
 }) {
   const supabase = createClient();
@@ -46,6 +46,27 @@ export async function createStudent(input: {
   const { data, error } = await supabase
     .from("students")
     .insert({ ...input, professional_id: user.id, status: "active" })
+    .select(studentFields)
+    .single();
+
+  if (error) throw error;
+  return data as StudentRecord;
+}
+
+export async function updateStudent(input: {
+  id: string;
+  full_name: string;
+  phone: string;
+  email: string;
+  cpf: string | null;
+  goal: string;
+}) {
+  const { id, ...changes } = input;
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from("students")
+    .update(changes)
+    .eq("id", id)
     .select(studentFields)
     .single();
 
