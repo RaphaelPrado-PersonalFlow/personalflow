@@ -55,6 +55,23 @@ export async function listAppointments(start: string, end: string) {
   return (data ?? []) as unknown as AppointmentRecord[];
 }
 
+export async function listUpcomingAppointments(from: string, limit = 5) {
+  const supabase = createClient();
+  const professionalId = await currentUserId();
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(appointmentFields)
+    .eq("professional_id", professionalId)
+    .is("deleted_at", null)
+    .gte("ends_at", from)
+    .in("status", ["scheduled", "waiting", "in_progress"])
+    .order("starts_at")
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as unknown as AppointmentRecord[];
+}
+
 export async function createAppointments(
   appointments: Array<{
     student_id: string;

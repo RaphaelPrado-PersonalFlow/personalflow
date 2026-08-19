@@ -303,6 +303,7 @@ function WorkoutsPageContent() {
       const protocolId = searchParams.get("protocolo");
       const periodId = searchParams.get("periodo");
       const workoutId = searchParams.get("treinoId");
+      const appointmentId = searchParams.get("atendimento");
       if (sessionId) {
         if (sessionBootstrapRef.current === sessionId) return;
         sessionBootstrapRef.current = sessionId;
@@ -355,14 +356,14 @@ function WorkoutsPageContent() {
         setPersistenceError("O treino informado não pertence a este protocolo.");
         return;
       }
-      const bootstrapKey = `${protocol.id}:${workout.id}`;
+      const bootstrapKey = `${protocol.id}:${workout.id}:${appointmentId ?? "manual"}`;
       if (sessionBootstrapRef.current === bootstrapKey) return;
       sessionBootstrapRef.current = bootstrapKey;
       const storageKey = `personalflow:session-start:${bootstrapKey}`;
       const idempotencyKey = sessionStorage.getItem(storageKey) ?? crypto.randomUUID();
       sessionStorage.setItem(storageKey, idempotencyKey);
       try {
-        const session = await startTrainingSession({ workoutId: workout.id, idempotencyKey });
+        const session = await startTrainingSession({ workoutId: workout.id, idempotencyKey, appointmentId });
         if (cancelled) return;
         sessionStorage.removeItem(storageKey);
         setActiveSessionRecord(session);

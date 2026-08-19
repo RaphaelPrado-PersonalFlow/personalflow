@@ -9,25 +9,23 @@ import Card from "@/components/ui/Card";
 import PageHeader from "@/components/ui/PageHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import StatCard from "@/components/ui/StatCard";
-import { listTrainingProtocols } from "@/services/training";
+import { listUpcomingAppointments, type AppointmentRecord } from "@/services/appointments";
+import { getTrainingProtocol, listTrainingProtocols, resolveAppointmentTrainingContext, type AppointmentTrainingContext } from "@/services/training";
 import { listWorkoutExecutionSummaries, type WorkoutExecutionSummary } from "@/services/training-sessions";
 import type { Protocol, Workout } from "@/types/training";
 
 type DashboardFilter = "appointments" | "active" | "assessments" | "expired";
 
-const appointments = [
-  { time: "08:00", name: "João Mendes", type: "Treino A", status: "Concluído" },
-  { time: "09:30", name: "Mariana Costa", type: "Avaliação", status: "Em andamento" },
-  { time: "11:00", name: "Carlos Lima", type: "Treino B", status: "Agendado" },
-  { time: "14:00", name: "Ana Souza", type: "Treino C", status: "Agendado" },
-];
-
-const dashboardLists: Record<DashboardFilter, { title: string; students: { name: string; detail: string }[] }> = {
-  appointments: { title: "Atendimentos de hoje", students: appointments.map((item) => ({ name: item.name, detail: `${item.time} · ${item.type}` })) },
+const dashboardLists: Record<Exclude<DashboardFilter, "appointments">, { title: string; students: { name: string; detail: string }[] }> = {
   active: { title: "Alunos ativos", students: [{ name: "João Mendes", detail: "Hipertrofia" }, { name: "Mariana Costa", detail: "Emagrecimento" }, { name: "Carlos Lima", detail: "Condicionamento" }, { name: "Ana Souza", detail: "Força" }] },
   assessments: { title: "Avaliações pendentes", students: [{ name: "Mariana Costa", detail: "Vence hoje" }, { name: "Paulo Rocha", detail: "Vencida há 5 dias" }, { name: "Beatriz Alves", detail: "Vence em 3 dias" }] },
   expired: { title: "Treinos vencidos", students: [{ name: "João Mendes", detail: "Meta de sessões concluída" }, { name: "Paulo Rocha", detail: "Protocolo vencido por data" }, { name: "Beatriz Alves", detail: "Protocolo vence hoje" }] },
 };
+
+type DashboardAppointment = AppointmentRecord & { trainingContext: AppointmentTrainingContext | null };
+
+const appointmentType = { training: "Treino", assessment: "Avaliação", reassessment: "Reavaliação" } as const;
+const appointmentStatus = { scheduled: "Agendado", waiting: "Aguardando", in_progress: "Em andamento" } as const;
 
 export default function Home() {
   const router = useRouter();
@@ -36,28 +34,92 @@ export default function Home() {
   const [activeFilter, setActiveFilter] = useState<DashboardFilter | null>(null);
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const [sessionStudent, setSessionStudent] = useState<Protocol | null>(null);
+  const [sessionAppointmentId, setSessionAppointmentId] = useState<string | null>(null);
   const [trainingProtocols, setTrainingProtocols] = useState<Protocol[]>([]);
   const [workoutExecutions, setWorkoutExecutions] = useState<Record<string, WorkoutExecutionSummary>>({});
+  const [upcomingAppointments, setUpcomingAppointments] = useState<DashboardAppointment[]>([]);
+  const [appointmentsLoading, setAppointmentsLoading] = useState(true);
+  const [appointmentsError, setAppointmentsError] = useState("");
 
   useEffect(() => {
     Promise.all([listTrainingProtocols(), listWorkoutExecutionSummaries()])
-      .then(([protocols, executions]) => { setTrainingProtocols(protocols); setWorkoutExecutions(executions); })
-      .catch(() => { setTrainingProtocols([]); setWorkoutExecutions({}); });
+      .then(([protocols, executions]) => {
+        setTrainingProtocols(protocols);
+        setWorkoutExecutions(executions);
+      })
+      .catch(() => {
+        setTrainingProtocols([]);
+        setWorkoutExecutions({});
+      });
   }, []);
 
-  const openWorkoutPicker = (studentName?: string) => {
-    setSessionStudent(studentName ? trainingProtocols.find((protocol) => protocol.student === studentName) ?? null : null);
+  useEffect(() => {
+    listUpcomingAppointments(new Date().toISOString())
+      .then(async (appointmentRows) => {
+        const resolved = await Promise.all(appointmentRows.map(async (appointment): Promise<DashboardAppointment> => {
+          if (appointment.type !== "training") return { ...appointment, trainingContext: null };
+          try {
+            const trainingContext = await resolveAppointmentTrainingContext({ appointmentId: appointment.id, studentId: appointment.student_id, startsAt: appointment.starts_at });
+            return { ...appointment, trainingContext };
+          } catch {
+            return { ...appointment, trainingContext: { kind: "unavailable", reason: "Não foi possível determinar o treino deste atendimento." } };
+          }
+        }));
+        setUpcomingAppointments(resolved);
+      })
+      .catch((error: unknown) => {
+        setUpcomingAppointments([]);
+        setAppointmentsError(error instanceof Error ? error.message : "Não foi possível carregar os próximos atendimentos.");
+      })
+      .finally(() => setAppointmentsLoading(false));
+  }, []);
+
+  const openWorkoutPicker = () => {
+    setSessionStudent(null);
+    setSessionAppointmentId(null);
     setSessionPickerOpen(true);
   };
 
   const closeWorkoutPicker = () => {
     setSessionPickerOpen(false);
     setSessionStudent(null);
+    setSessionAppointmentId(null);
   };
 
   const startWorkout = (protocol: Protocol, workout: Workout) => {
-    router.push(`/treinos?aluno=${protocol.studentId}&protocolo=${protocol.id}&periodo=${workout.periodId}&treinoId=${workout.id}`);
+    const appointment = sessionAppointmentId ? `&atendimento=${sessionAppointmentId}` : "";
+    router.push(`/treinos?aluno=${protocol.studentId}&protocolo=${protocol.id}&periodo=${workout.periodId}&treinoId=${workout.id}${appointment}`);
   };
+
+  const openAppointmentSession = async (appointment: DashboardAppointment) => {
+    const context = appointment.trainingContext;
+    if (!context || context.kind === "unavailable") return;
+    if (context.kind === "resume") {
+      router.push(`/treinos?sessao=${context.sessionId}`);
+      return;
+    }
+    if (context.kind === "selection_required") {
+      try {
+        const protocol = await getTrainingProtocol(context.protocolId);
+        if (protocol.studentId !== context.studentId) throw new Error("O protocolo não corresponde ao aluno do atendimento.");
+        const period = protocol.periods.find((item) => item.id === context.periodId);
+        const allowedIds = new Set(context.workoutIds);
+        const workouts = period?.workouts.filter((workout) => allowedIds.has(workout.id)) ?? [];
+        if (workouts.length !== context.workoutIds.length) throw new Error("Os treinos válidos deste atendimento não estão mais disponíveis.");
+        setSessionAppointmentId(appointment.id);
+        setSessionStudent({ ...protocol, activePeriodId: context.periodId, workouts });
+        setSessionPickerOpen(true);
+      } catch (error) {
+        setAppointmentsError(error instanceof Error ? error.message : "Não foi possível carregar os treinos deste atendimento.");
+      }
+      return;
+    }
+    router.push(`/treinos?aluno=${context.studentId}&protocolo=${context.protocolId}&periodo=${context.periodId}&treinoId=${context.workoutId}&atendimento=${appointment.id}`);
+  };
+
+  const nextTrainingAppointment = upcomingAppointments.find((appointment) =>
+    appointment.type === "training" && appointment.trainingContext && appointment.trainingContext.kind !== "unavailable",
+  );
 
   return (
     <MainLayout>
@@ -68,23 +130,34 @@ export default function Home() {
         />
 
         <Card className="overflow-hidden p-0">
-          <div className="flex items-center justify-between border-b border-[var(--border)] p-5"><div><h2 className="font-semibold">Agenda de hoje</h2><p className="mt-1 text-sm text-[var(--muted)]">Próximos atendimentos</p></div><Button variant="ghost" onClick={() => router.push("/agenda")}>Ver agenda →</Button></div>
+          <div className="flex items-center justify-between border-b border-[var(--border)] p-5"><div><h2 className="font-semibold">Agenda</h2><p className="mt-1 text-sm text-[var(--muted)]">Próximos atendimentos</p></div><Button variant="ghost" onClick={() => router.push("/agenda")}>Ver agenda →</Button></div>
           <div className="divide-y divide-[var(--border)]">
-            {appointments.map((item) => <div key={item.time} className="grid grid-cols-[58px_1fr] items-center gap-3 px-4 py-4 sm:grid-cols-[64px_1fr_auto_auto] sm:px-5"><span className="text-sm font-semibold text-blue-500">{item.time}</span><div className="min-w-0"><p className="truncate text-sm font-medium">{item.name}</p><p className="text-xs text-[var(--muted)]">{item.type}</p></div><span className="hidden sm:inline-flex"><Badge tone={item.status === "Concluído" ? "success" : item.status === "Em andamento" ? "warning" : "neutral"}>{item.status}</Badge></span>{item.type.startsWith("Treino") && item.status !== "Concluído" && <Button className="col-span-2 w-full sm:col-span-1 sm:w-auto" onClick={() => openWorkoutPicker(item.name)}>Iniciar treino</Button>}</div>)}
+            {appointmentsLoading && <p className="px-5 py-8 text-sm text-[var(--muted)]">Carregando agenda...</p>}
+            {!appointmentsLoading && appointmentsError && <p className="px-5 py-8 text-sm text-red-500">{appointmentsError}</p>}
+            {!appointmentsLoading && !appointmentsError && upcomingAppointments.length === 0 && <p className="px-5 py-8 text-sm text-[var(--muted)]">Nenhum próximo atendimento agendado.</p>}
+            {upcomingAppointments.map((item) => {
+              const context = item.trainingContext;
+              const canOpenTraining = item.type === "training" && context && context.kind !== "unavailable";
+              const contextReason = context && (context.kind === "unavailable" || context.kind === "selection_required") ? context.reason : null;
+              return <div key={item.id} className="grid grid-cols-[58px_1fr] items-center gap-3 px-4 py-4 sm:grid-cols-[64px_1fr_auto_auto] sm:px-5"><span className="text-sm font-semibold text-blue-500">{new Date(item.starts_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span><div className="min-w-0"><p className="truncate text-sm font-medium">{item.students?.full_name ?? "Aluno não identificado"}</p><p className="text-xs text-[var(--muted)]">{appointmentType[item.type]}{contextReason ? ` · ${contextReason}` : ""}</p></div><span className="hidden sm:inline-flex"><Badge tone={item.status === "in_progress" ? "warning" : "neutral"}>{appointmentStatus[item.status as keyof typeof appointmentStatus]}</Badge></span>{canOpenTraining && <Button className="col-span-2 w-full sm:col-span-1 sm:w-auto" onClick={() => void openAppointmentSession(item)}>{context.kind === "resume" ? "Retomar sessão" : "Iniciar sessão"}</Button>}</div>;
+            })}
           </div>
           <div className="border-t border-[var(--border)] p-4 sm:p-5">
-            <Button className="w-full sm:w-auto" onClick={() => openWorkoutPicker()}>＋ Iniciar uma sessão</Button>
+            <Button className="w-full sm:w-auto" onClick={() => nextTrainingAppointment ? void openAppointmentSession(nextTrainingAppointment) : openWorkoutPicker()}>＋ Iniciar uma sessão</Button>
           </div>
         </Card>
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <button className="text-left" onClick={() => setActiveFilter("appointments")}><StatCard title="Atendimentos hoje" value={7} detail="2 já concluídos" tone="blue" /></button>
+          <button className="text-left" onClick={() => setActiveFilter("appointments")}><StatCard title="Próximos atendimentos" value={upcomingAppointments.length} detail="Dados da Agenda" tone="blue" /></button>
           <button className="text-left" onClick={() => setActiveFilter("active")}><StatCard title="Alunos ativos" value={52} detail="+3 neste mês" tone="green" /></button>
           <button className="text-left" onClick={() => setActiveFilter("assessments")}><StatCard title="Avaliações pendentes" value={3} detail="1 agendada para hoje" tone="violet" /></button>
           <button className="text-left" onClick={() => setActiveFilter("expired")}><StatCard title="Treinos vencidos" value={3} detail="Protocolos para atualizar" tone="amber" /></button>
         </section>
 
-        {activeFilter && <Card><div className="flex items-center justify-between"><div><h2 className="font-semibold">{dashboardLists[activeFilter].title}</h2><p className="mt-1 text-sm text-[var(--muted)]">Lista correspondente ao indicador selecionado</p></div><button onClick={() => setActiveFilter(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]">×</button></div><div className="mt-4 divide-y divide-[var(--border)]">{dashboardLists[activeFilter].students.map((student) => <div key={student.name} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><p className="font-medium">{student.name}</p><p className="text-xs text-[var(--muted)]">{student.detail}</p></div>{activeFilter === "expired" ? <Button onClick={() => router.push("/treinos")}>Atualizar treino</Button> : <Button variant="secondary" onClick={() => router.push("/alunos")}>Ver aluno</Button>}</div>)}</div></Card>}
+        {activeFilter && (() => {
+          const list = activeFilter === "appointments" ? { title: "Próximos atendimentos", students: upcomingAppointments.map((item) => ({ name: item.students?.full_name ?? "Aluno não identificado", detail: `${new Date(item.starts_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })} · ${appointmentType[item.type]}` })) } : dashboardLists[activeFilter];
+          return <Card><div className="flex items-center justify-between"><div><h2 className="font-semibold">{list.title}</h2><p className="mt-1 text-sm text-[var(--muted)]">Lista correspondente ao indicador selecionado</p></div><button onClick={() => setActiveFilter(null)} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]">×</button></div><div className="mt-4 divide-y divide-[var(--border)]">{list.students.map((student) => <div key={`${student.name}:${student.detail}`} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><p className="font-medium">{student.name}</p><p className="text-xs text-[var(--muted)]">{student.detail}</p></div>{activeFilter === "expired" ? <Button onClick={() => router.push("/treinos")}>Atualizar treino</Button> : <Button variant="secondary" onClick={() => router.push(activeFilter === "appointments" ? "/agenda" : "/alunos")}>{activeFilter === "appointments" ? "Ver agenda" : "Ver aluno"}</Button>}</div>)}</div></Card>;
+        })()}
 
         <section className="grid gap-6 xl:grid-cols-[1.5fr_1fr]">
           <Card><div className="flex items-center justify-between"><div><p className="text-sm text-[var(--muted)]">Treinos concluídos</p><p className="mt-2 text-3xl font-semibold">68%</p></div><div className="grid size-16 place-items-center rounded-full border-4 border-blue-500 text-xs font-bold">15/22</div></div><div className="mt-5 h-2 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full w-[68%] rounded-full bg-blue-500" /></div></Card>
@@ -116,7 +189,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="p-5">
-                <button type="button" onClick={() => setSessionStudent(null)} className="mb-4 text-sm font-semibold text-blue-500">← Escolher outro aluno</button>
+                {!sessionAppointmentId && <button type="button" onClick={() => setSessionStudent(null)} className="mb-4 text-sm font-semibold text-blue-500">← Escolher outro aluno</button>}
                 <div className="space-y-3">
                   {sessionStudent.workouts.map((workout) => {
                     const target = workout.targetExecutions ?? Math.max(1, Math.round((sessionStudent.frequency * 8) / sessionStudent.workouts.length));

@@ -167,6 +167,74 @@ export async function listTrainingProtocols(): Promise<Protocol[]> {
   return ((data ?? []) as unknown as ProtocolRow[]).map(mapProtocol);
 }
 
+export type AppointmentTrainingContext =
+  | { kind: "ready"; studentId: string; protocolId: string; periodId: string; workoutId: string; sessionId: null }
+  | { kind: "resume"; studentId: string; protocolId: string; periodId: string; workoutId: string; sessionId: string }
+  | { kind: "selection_required"; studentId: string; protocolId: string; periodId: string; workoutIds: string[]; reason: string }
+  | { kind: "unavailable"; reason: string };
+
+type DatedRow = { id: string; start_date: string | null; end_date: string | null; status: string };
+
+function zonedDateParts(value: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+  const date = `${part("year")}-${part("month")}-${part("day")}`;
+  const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+  return { date, weekday };
+}
+
+function appliesOn(row: DatedRow, date: string) {
+  return (!row.start_date || row.start_date <= date) && (!row.end_date || row.end_date >= date);
+}
+
+/** Resolves an appointment without guessing across students, protocols, periods, or workouts. */
+export async function resolveAppointmentTrainingContext(input: {
+  appointmentId: string; studentId: string; startsAt: string;
+}): Promise<AppointmentTrainingContext> {
+  const client = createClient();
+  const { data: sessions, error: sessionError } = await client.from("training_sessions")
+    .select("id, student_id, protocol_id, period_id, workout_id")
+    .eq("appointment_id", input.appointmentId).eq("status", "in_progress").limit(2);
+  if (sessionError) throw sessionError;
+  if ((sessions ?? []).length === 1) {
+    const session = sessions![0];
+    if (session.student_id !== input.studentId) return { kind: "unavailable", reason: "A sessão vinculada não corresponde ao aluno do atendimento." };
+    return { kind: "resume", studentId: session.student_id, protocolId: session.protocol_id, periodId: session.period_id, workoutId: session.workout_id, sessionId: session.id };
+  }
+  if ((sessions ?? []).length > 1) return { kind: "unavailable", reason: "Há mais de uma sessão em andamento vinculada a este atendimento." };
+
+  const { date, weekday } = zonedDateParts(input.startsAt);
+  const { data: protocolRows, error: protocolError } = await client.from("training_protocols")
+    .select("id, start_date, end_date, status").eq("student_id", input.studentId).in("status", ["active", "scheduled"]);
+  if (protocolError) throw protocolError;
+  const protocols = ((protocolRows ?? []) as DatedRow[]).filter((row) => appliesOn(row, date));
+  if (protocols.length !== 1) return { kind: "unavailable", reason: protocols.length ? "Há mais de um protocolo vigente para este aluno." : "O aluno não possui protocolo vigente na data do atendimento." };
+
+  const { data: periodRows, error: periodError } = await client.from("training_periods")
+    .select("id, start_date, end_date, status").eq("protocol_id", protocols[0].id).in("status", ["active", "scheduled"]);
+  if (periodError) throw periodError;
+  const periods = ((periodRows ?? []) as DatedRow[]).filter((row) => appliesOn(row, date));
+  if (periods.length !== 1) return { kind: "unavailable", reason: periods.length ? "Há mais de um período vigente na data do atendimento." : "Não há período vigente na data do atendimento." };
+
+  const { data: workoutRows, error: workoutError } = await client.from("workouts")
+    .select("id, period_workout_slots(weekday, sequence_in_week)")
+    .eq("period_id", periods[0].id).eq("is_current", true).order("sequence");
+  if (workoutError) throw workoutError;
+  const workouts = (workoutRows ?? []) as unknown as Array<{ id: string; period_workout_slots: Array<{ weekday: number | null; sequence_in_week: number }> }>;
+  if (!workouts.length) return { kind: "unavailable", reason: "O período vigente não possui treino atual." };
+  const weekdayMatches = workouts.filter((workout) => workout.period_workout_slots.some((slot) => slot.weekday === weekday));
+  const selected = weekdayMatches.length === 1 ? weekdayMatches[0] : workouts.length === 1 ? workouts[0] : null;
+  if (!selected) return {
+    kind: "selection_required", studentId: input.studentId, protocolId: protocols[0].id, periodId: periods[0].id,
+    workoutIds: (weekdayMatches.length > 1 ? weekdayMatches : workouts).map((workout) => workout.id),
+    reason: weekdayMatches.length > 1 ? "Mais de um treino está associado a este dia da semana." : "O período possui vários treinos, mas nenhum slot identifica com segurança o treino deste atendimento.",
+  };
+  return { kind: "ready", studentId: input.studentId, protocolId: protocols[0].id, periodId: periods[0].id, workoutId: selected.id, sessionId: null };
+}
+
 export async function getTrainingProtocol(id: string) {
   const { data, error } = await createClient().from("training_protocols").select(protocolSelect).eq("id", id).single();
   if (error) throw error;
