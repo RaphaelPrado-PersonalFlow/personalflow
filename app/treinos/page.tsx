@@ -279,7 +279,7 @@ function WorkoutsPageContent() {
   useEffect(() => { sessionExercisesRef.current = sessionExercises; }, [sessionExercises]);
 
   useEffect(() => {
-    Promise.all([exerciseRepository.listCustom(), listTrainingStudents(), listTrainingProtocols()])
+    Promise.all([exerciseRepository.listCustom(), listTrainingStudents(), listTrainingProtocols("operational")])
       .then(([customExercises, studentRows, protocolRows]) => {
         const customCatalog: ExerciseCatalogReference[] = customExercises
           .filter((exercise) => exercise.active)

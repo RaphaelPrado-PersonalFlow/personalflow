@@ -80,6 +80,7 @@ export type Protocol = {
   objective: string;
   frequency: number;
   status: ProtocolStatus;
+  archivedAt: string | null;
   start: string;
   end: string;
   periods: TrainingPeriod[];

@@ -33,7 +33,7 @@ type PeriodRow = {
 };
 type ProtocolRow = {
   id: string; student_id: string; display_order: number; name: string; objective: string; status: string;
-  start_date: string | null; end_date: string | null; planned_weekly_frequency: number;
+  start_date: string | null; end_date: string | null; planned_weekly_frequency: number; archived_at: string | null;
   students: { full_name: string } | { full_name: string }[] | null; training_periods: PeriodRow[];
 };
 
@@ -140,13 +140,14 @@ function mapProtocol(row: ProtocolRow): Protocol {
   return {
     id: row.id, displayOrder: row.display_order, studentId: row.student_id, student: student?.full_name ?? "Aluno",
     name: row.name, objective: row.objective, frequency: row.planned_weekly_frequency,
-    status: row.status === "archived" ? "Arquivado" : protocolStatusFromDates(dateToDisplay(row.start_date), dateToDisplay(row.end_date)), start: dateToDisplay(row.start_date), end: dateToDisplay(row.end_date),
+    status: row.status === "archived" || row.archived_at ? "Arquivado" : protocolStatusFromDates(dateToDisplay(row.start_date), dateToDisplay(row.end_date)),
+    archivedAt: row.archived_at, start: dateToDisplay(row.start_date), end: dateToDisplay(row.end_date),
     periods, activePeriodId: active?.id ?? "", workouts: active?.workouts ?? [],
   };
 }
 
 const protocolSelect = `
-  id, student_id, display_order, name, objective, status, start_date, end_date, planned_weekly_frequency,
+  id, student_id, display_order, name, objective, status, start_date, end_date, planned_weekly_frequency, archived_at,
   students!inner(full_name),
   training_periods(id, name, sequence, start_date, end_date, status,
     workouts(id, period_id, lineage_id, version, is_current, published_at, name, focus, sequence,
@@ -161,10 +162,47 @@ export async function listTrainingStudents(): Promise<TrainingStudent[]> {
   return (data ?? []).map((row: { id: string; full_name: string; goal: string | null; status: TrainingStudent["status"] }) => ({ id: row.id, fullName: row.full_name, goal: row.goal ?? "", status: row.status }));
 }
 
-export async function listTrainingProtocols(): Promise<Protocol[]> {
-  const { data, error } = await createClient().from("training_protocols").select(protocolSelect).order("display_order").order("created_at");
+export type TrainingProtocolList = "operational" | "archived" | "all";
+
+export async function listTrainingProtocols(list: TrainingProtocolList = "operational"): Promise<Protocol[]> {
+  let query = createClient().from("training_protocols").select(protocolSelect);
+  if (list === "operational") query = query.neq("status", "archived").is("archived_at", null);
+  if (list === "archived") query = query.or("status.eq.archived,archived_at.not.is.null");
+  const { data, error } = await query.order("display_order").order("created_at");
   if (error) throw error;
   return ((data ?? []) as unknown as ProtocolRow[]).map(mapProtocol);
+}
+
+async function authenticatedProfessionalId() {
+  const { data, error } = await createClient().auth.getUser();
+  if (error) throw error;
+  if (!data.user) throw new Error("É necessário estar autenticado para alterar um protocolo.");
+  return data.user.id;
+}
+
+async function updateProtocolArchiveState(id: string, values: { status: string; archived_at: string | null }) {
+  const client = createClient();
+  const professionalId = await authenticatedProfessionalId();
+  const { data, error } = await client.from("training_protocols").update(values)
+    .eq("id", id).eq("professional_id", professionalId).select(protocolSelect).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Não foi possível alterar o protocolo. Verifique se ele ainda existe e pertence ao seu usuário.");
+  return mapProtocol(data as unknown as ProtocolRow);
+}
+
+export async function archiveTrainingProtocol(id: string) {
+  return updateProtocolArchiveState(id, { status: "archived", archived_at: new Date().toISOString() });
+}
+
+export async function restoreTrainingProtocol(id: string) {
+  const client = createClient();
+  const professionalId = await authenticatedProfessionalId();
+  const { data, error } = await client.from("training_protocols").select("start_date, end_date")
+    .eq("id", id).eq("professional_id", professionalId).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Não foi possível restaurar o protocolo. Verifique se ele ainda existe e pertence ao seu usuário.");
+  const status = statusToDb[protocolStatusFromDates(dateToDisplay(data.start_date), dateToDisplay(data.end_date))];
+  return updateProtocolArchiveState(id, { status, archived_at: null });
 }
 
 export type AppointmentTrainingContext =
@@ -274,7 +312,7 @@ export async function createTrainingProtocol(input: {
   const periodId = crypto.randomUUID();
   const protocol: Protocol = {
     id: protocolId, displayOrder: 1, studentId: input.studentId, student: "", name: input.name,
-    objective: input.objective, frequency: input.frequency, status: "Rascunho",
+    objective: input.objective, frequency: input.frequency, status: "Rascunho", archivedAt: null,
     start: input.start, end: input.end, activePeriodId: periodId, workouts: [],
     periods: [{ id: periodId, name: input.name || "Período 1", sequence: 1, start: input.start, end: input.end, status: "Rascunho", workouts: [] }],
   };
@@ -291,16 +329,24 @@ export async function saveProtocol(protocol: Protocol, catalog: ExerciseCatalogR
 
 /** Updates only the protocol header; prescribed periods and workouts are deliberately untouched. */
 export async function updateTrainingProtocolDetails(input: Pick<Protocol, "id" | "name" | "objective" | "frequency" | "start" | "end">) {
-  const status = statusToDb[protocolStatusFromDates(input.start, input.end)];
-  const { error } = await createClient().from("training_protocols").update({
+  const client = createClient();
+  const professionalId = await authenticatedProfessionalId();
+  const { data: current, error: currentError } = await client.from("training_protocols").select("status, archived_at")
+    .eq("id", input.id).eq("professional_id", professionalId).maybeSingle();
+  if (currentError) throw currentError;
+  if (!current) throw new Error("Não foi possível alterar o protocolo. Verifique se ele ainda existe e pertence ao seu usuário.");
+  const archived = current.status === "archived" || current.archived_at != null;
+  const { data, error } = await client.from("training_protocols").update({
     name: input.name ?? input.objective,
     objective: input.objective,
     planned_weekly_frequency: input.frequency,
     start_date: displayToDate(input.start),
     end_date: displayToDate(input.end),
-    status,
-  }).eq("id", input.id);
+    status: archived ? "archived" : statusToDb[protocolStatusFromDates(input.start, input.end)],
+    archived_at: archived ? current.archived_at ?? new Date().toISOString() : null,
+  }).eq("id", input.id).eq("professional_id", professionalId).select("id").maybeSingle();
   if (error) throw error;
+  if (!data) throw new Error("Não foi possível alterar o protocolo. Verifique se ele ainda existe e pertence ao seu usuário.");
   return getTrainingProtocol(input.id);
 }
 
