@@ -279,25 +279,65 @@ export async function getTrainingProtocol(id: string) {
   return mapProtocol(data as unknown as ProtocolRow);
 }
 
-async function deleteOwnedTrainingRecord(table: "training_protocols" | "training_periods", id: string, label: string) {
-  const { data, error } = await createClient().from(table).delete().eq("id", id).select("id");
+export type TrainingProtocolDeletionReason = { code: string; message: string };
+export type TrainingProtocolDeletionEligibility = { allowed: boolean; reasons: TrainingProtocolDeletionReason[] };
+
+function parseDeletionEligibility(value: unknown): TrainingProtocolDeletionEligibility {
+  if (!value || typeof value !== "object") return { allowed: false, reasons: [] };
+  const record = value as { allowed?: unknown; reasons?: unknown };
+  const reasons = Array.isArray(record.reasons)
+    ? record.reasons.flatMap((reason) => {
+      if (!reason || typeof reason !== "object") return [];
+      const item = reason as { code?: unknown; message?: unknown };
+      return typeof item.code === "string" && typeof item.message === "string" ? [{ code: item.code, message: item.message }] : [];
+    })
+    : [];
+  return { allowed: record.allowed === true, reasons };
+}
+
+export async function getTrainingProtocolDeletionEligibility(id: string) {
+  const { data, error } = await createClient().rpc("get_training_protocol_deletion_eligibility", { p_protocol_id: id });
+  if (error) {
+    if (error.code === "P0002" || error.code === "42501") {
+      throw new Error("Não foi possível consultar este protocolo. Verifique se ele existe e pertence ao seu usuário.");
+    }
+    throw error;
+  }
+  return parseDeletionEligibility(data);
+}
+
+export async function deleteTrainingProtocol(id: string) {
+  const { data, error } = await createClient().rpc("delete_training_protocol_permanently", { p_protocol_id: id });
+  if (error) {
+    let eligibility: TrainingProtocolDeletionEligibility | null = null;
+    try { eligibility = parseDeletionEligibility(error.details ? JSON.parse(error.details) : null); } catch { eligibility = null; }
+    if (eligibility?.reasons.length) throw new Error(eligibility.reasons.map((reason) => reason.message).join(" "));
+    if (["23503", "55000", "P0001"].includes(error.code)) {
+      throw new Error("Este protocolo possui histórico ou versões protegidas e não pode ser excluído permanentemente. Você pode mantê-lo arquivado.");
+    }
+    if (error.code === "P0002" || error.code === "42501") {
+      throw new Error("Não foi possível excluir este protocolo. Verifique se ele existe e pertence ao seu usuário.");
+    }
+    throw error;
+  }
+  if (data !== id) throw new Error("O banco não confirmou a exclusão do protocolo.");
+}
+
+async function deleteOwnedTrainingPeriod(id: string) {
+  const { data, error } = await createClient().from("training_periods").delete().eq("id", id).select("id");
   if (error) {
     if (error.code === "23503") {
-      throw new Error(`N\u00e3o foi poss\u00edvel excluir ${label} porque ele possui um v\u00ednculo hist\u00f3rico. Arquive-o para preservar esse hist\u00f3rico.`);
+      throw new Error("Não foi possível excluir o período porque ele possui um vínculo histórico.");
     }
     throw error;
   }
   if (data?.length !== 1) {
-    throw new Error(`N\u00e3o foi poss\u00edvel excluir ${label}. Verifique se ele ainda existe e pertence ao seu usu\u00e1rio.`);
+    throw new Error("Não foi possível excluir o período. Verifique se ele ainda existe e pertence ao seu usuário.");
   }
 }
 
-export async function deleteTrainingProtocol(id: string) {
-  return deleteOwnedTrainingRecord("training_protocols", id, "o protocolo");
-}
-
 export async function deleteTrainingPeriod(id: string) {
-  return deleteOwnedTrainingRecord("training_periods", id, "o per\u00edodo");
+  return deleteOwnedTrainingPeriod(id);
 }
 
 export async function reorderTrainingProtocols(orderedIds: string[]) {
