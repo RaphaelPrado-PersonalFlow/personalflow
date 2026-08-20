@@ -236,6 +236,7 @@ function WorkoutsPageContent() {
   const [volumeMetric, setVolumeMetric] = useState<VolumeMetric>("series");
   const [newProtocolOpen, setNewProtocolOpen] = useState(false);
   const [newProtocolStudentId, setNewProtocolStudentId] = useState("");
+  const [creatingProtocol, setCreatingProtocol] = useState(false);
   const [activeSession, setActiveSession] = useState<{ protocol: Protocol; workout: Workout } | null>(null);
   const [activeSessionRecord, setActiveSessionRecord] = useState<TrainingSession | null>(null);
   const [sessionExercises, setSessionExercises] = useState<SessionExercise[]>([]);
@@ -386,6 +387,9 @@ function WorkoutsPageContent() {
     const timer = window.setTimeout(() => {
       const newProtocolStudent = searchParams.get("novoProtocolo");
       if (newProtocolStudent && students.some((item) => item.id === newProtocolStudent)) {
+        const nextParams = new URLSearchParams(searchParams.toString());
+        nextParams.delete("novoProtocolo");
+        router.replace(nextParams.size ? `/treinos?${nextParams.toString()}` : "/treinos");
         setNewProtocolStudentId(newProtocolStudent);
         setNewProtocolOpen(true);
       }
@@ -444,7 +448,7 @@ function WorkoutsPageContent() {
       if (searchParams.get("periodizar") === "1") setPeriodizationOpen(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [protocols, searchParams, students]);
+  }, [protocols, router, searchParams, students]);
 
   const filteredStudentGroups = useMemo(() => {
     const normalized = query.toLocaleLowerCase("pt-BR");
@@ -476,8 +480,19 @@ function WorkoutsPageContent() {
     );
   }
 
+  function closeNewProtocol(returnStudentId = newProtocolStudentId) {
+    setNewProtocolOpen(false);
+    const contextStudentId = searchParams.get("aluno");
+    if (contextStudentId === returnStudentId && students.some((item) => item.id === contextStudentId)) {
+      router.push(`/treinos/${contextStudentId}`);
+      return;
+    }
+    setNewProtocolStudentId("");
+  }
+
   async function addProtocol(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (creatingProtocol) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     const studentId = String(data.get("student"));
@@ -490,14 +505,16 @@ function WorkoutsPageContent() {
     const frequency = Number(data.get("frequency"));
     const start = String(data.get("start")).split("-").reverse().join("/");
     const end = String(data.get("end")).split("-").reverse().join("/");
+    setCreatingProtocol(true);
     try {
       const protocol = await createTrainingProtocol({ studentId, name, objective, frequency, start, end });
       setProtocols((current) => [protocol, ...current]);
-      setNewProtocolOpen(false);
-      setNewProtocolStudentId("");
       form.reset();
+      closeNewProtocol(studentId);
     } catch (error) {
       setPersistenceError(error instanceof Error ? error.message : "Não foi possível criar o protocolo.");
+    } finally {
+      setCreatingProtocol(false);
     }
   }
 
@@ -1295,7 +1312,7 @@ function WorkoutsPageContent() {
         </section>
       </div>
 
-      {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Crie um planejamento independente. Depois, você poderá periodizá-lo internamente.</p></div><button type="button" onClick={() => { setNewProtocolOpen(false); setNewProtocolStudentId(""); }} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)]" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select required name="student" value={newProtocolStudentId} onChange={(event) => setNewProtocolStudentId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option value="" disabled>Selecione o aluno</option>{students.map((student) => <option key={student.id} value={student.id}>{student.fullName}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Nome do protocolo<input name="name" required placeholder="Ex.: Hipertrofia — segundo semestre" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => { setNewProtocolOpen(false); setNewProtocolStudentId(""); }}>Cancelar</Button><Button type="submit">Criar protocolo</Button></div></form></div>}
+      {newProtocolOpen && <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-labelledby="new-protocol-title"><form onSubmit={addProtocol} className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 id="new-protocol-title" className="text-xl font-semibold">Novo protocolo</h2><p className="mt-1 text-sm text-[var(--muted)]">Crie um planejamento independente. Depois, você poderá periodizá-lo internamente.</p></div><button type="button" disabled={creatingProtocol} onClick={() => closeNewProtocol()} className="grid size-9 place-items-center rounded-lg hover:bg-[var(--surface-raised)] disabled:cursor-wait disabled:opacity-60" aria-label="Fechar">×</button></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2">Aluno<select required name="student" value={newProtocolStudentId} onChange={(event) => setNewProtocolStudentId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option value="" disabled>Selecione o aluno</option>{students.map((student) => <option key={student.id} value={student.id}>{student.fullName}</option>)}</select></label><label className="text-sm font-medium sm:col-span-2">Nome do protocolo<input name="name" required placeholder="Ex.: Hipertrofia — segundo semestre" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium sm:col-span-2">Objetivo principal<select name="objective" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3"><option>Hipertrofia</option><option>Emagrecimento</option><option>Força</option><option>Condicionamento</option><option>Qualidade de vida</option></select></label><label className="text-sm font-medium">Frequência semanal<select name="frequency" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3">{[1, 2, 3, 4, 5, 6, 7].map((number) => <option key={number} value={number}>{number}× por semana</option>)}</select></label><span /><label className="text-sm font-medium">Data de início<input required name="start" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label><label className="text-sm font-medium">Previsão de término<input required name="end" type="date" className="mt-2 h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3" /></label></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" disabled={creatingProtocol} onClick={() => closeNewProtocol()}>Cancelar</Button><Button type="submit" disabled={creatingProtocol}>{creatingProtocol ? "Criando…" : "Criar protocolo"}</Button></div></form></div>}
 
       {prescriptionEditor && (() => {
         const protocol = protocols.find((item) => item.id === prescriptionEditor.protocolId);
