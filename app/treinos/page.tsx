@@ -528,7 +528,7 @@ function WorkoutsPageContent() {
 
   function persistSessionMutation(operation: () => Promise<unknown>, errorMessage: string) {
     const sessionId = activeSessionRecord?.id;
-    if (!sessionId) return Promise.resolve();
+    if (!sessionId) return Promise.resolve(false);
     const revision = ++sessionMutationRevisionRef.current;
     sessionMutationFailedRef.current = false;
     setSessionPersistenceError("");
@@ -538,6 +538,7 @@ function WorkoutsPageContent() {
       const refreshed = await getTrainingSession(sessionId);
       if (refreshed.status !== "in_progress") throw new Error("A sessão deixou de estar disponível para edição.");
       if (revision === sessionMutationRevisionRef.current) reconcileSession(refreshed);
+      return true;
     }).catch(async (error: unknown) => {
       sessionMutationFailedRef.current = true;
       const message = error instanceof Error ? error.message : errorMessage;
@@ -546,19 +547,20 @@ function WorkoutsPageContent() {
       if (revision === sessionMutationRevisionRef.current) {
         try { reconcileSession(await getTrainingSession(sessionId)); } catch { /* mantém a sessão visível */ }
       }
+      return false;
     }).finally(() => setPendingSessionMutations((count) => Math.max(0, count - 1)));
-    sessionMutationQueueRef.current = task;
+    sessionMutationQueueRef.current = task.then(() => undefined);
     return task;
   }
 
   async function toggleExercise(id: string) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    if (!exercise) return;
+    if (!exercise) return false;
     const completed = completedExercises.includes(id);
     const status: TrainingSessionItemStatus = completed ? "pending" : "completed";
     setCompletedExercises((current) => completed ? current.filter((item) => item !== id) : [...current, id]);
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, executionStatus: status } : item));
-    await persistSessionMutation(async () => {
+    return persistSessionMutation(async () => {
       if (!completed) await Promise.all((exercise.seriesConfigurations ?? []).filter((set) => set.id && !set.isRemoved).map((set) => updateSessionSet(set.id!, { status: "completed" })));
       await updateSessionExercise(exercise.sessionExerciseId, { status });
     }, "Não foi possível salvar o exercício.");
@@ -566,12 +568,25 @@ function WorkoutsPageContent() {
 
   async function updateSessionExerciseStatus(id: string, status: TrainingSessionItemStatus) {
     const exercise = sessionExercises.find((item) => item.id === id);
-    if (!exercise) return;
-    setSessionExercises((current) => current.map((item) => item.id === id ? { ...item, executionStatus: status } : item));
+    if (!exercise) return false;
+    const pendingSets = (exercise.seriesConfigurations ?? []).filter((set) =>
+      set.id && !set.isRemoved && (set.executionStatus ?? "pending") === "pending");
+    setSessionExercises((current) => current.map((item) => item.id === id ? {
+      ...item,
+      executionStatus: status,
+      seriesConfigurations: status === "partial"
+        ? item.seriesConfigurations?.map((set) => (set.executionStatus ?? "pending") === "pending" ? { ...set, executionStatus: "skipped" } : set)
+        : item.seriesConfigurations,
+    } : item));
     setCompletedExercises((current) => status === "completed"
       ? current.includes(id) ? current : [...current, id]
       : current.filter((item) => item !== id));
-    await persistSessionMutation(() => updateSessionExercise(exercise.sessionExerciseId, { status }), "Não foi possível salvar o estado do exercício.");
+    return persistSessionMutation(async () => {
+      if (status === "partial") {
+        await Promise.all(pendingSets.map((set) => updateSessionSet(set.id!, { status: "skipped" })));
+      }
+      await updateSessionExercise(exercise.sessionExerciseId, { status });
+    }, "Não foi possível salvar o estado do exercício.");
   }
 
   async function changeSessionSeries(id: string, direction: -1 | 1) {
@@ -660,11 +675,11 @@ function WorkoutsPageContent() {
   async function updateSessionSeriesStatus(id: string, seriesIndex: number, status: TrainingSessionItemStatus) {
     const exercise = sessionExercises.find((item) => item.id === id);
     const targetSet = exercise?.seriesConfigurations?.filter((set) => !set.isRemoved)[seriesIndex];
-    if (!targetSet?.id) return;
+    if (!targetSet?.id) return false;
     setSessionExercises((current) => current.map((item) => item.id === id ? { ...item,
       seriesConfigurations: item.seriesConfigurations?.map((set) => set.id === targetSet.id ? { ...set, executionStatus: status } : set),
     } : item));
-    await persistSessionMutation(() => updateSessionSet(targetSet.id!, { status }), "Não foi possível salvar o estado da série.");
+    return persistSessionMutation(() => updateSessionSet(targetSet.id!, { status }), "Não foi possível salvar o estado da série.");
   }
 
   async function updateSessionSeriesEffort(id: string, seriesIndex: number, value: string) {

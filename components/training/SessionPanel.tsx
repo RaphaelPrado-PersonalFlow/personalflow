@@ -11,11 +11,11 @@ type Exercise = { id: string; name: string; prescription: string; load: string; 
 type Props = {
   student: string; workoutName: string; focus: string; exercises: Exercise[]; completedIds: string[]; sessionNotes?: string | null;
   persistenceError?: string; isSaving?: boolean; isCompleting?: boolean; swappingExerciseId: string | null;
-  compatibleNames: (exercise: Exercise) => string[]; onClose: () => void; onToggleComplete: (id: string) => void;
+  compatibleNames: (exercise: Exercise) => string[]; onClose: () => void; onToggleComplete: (id: string) => Promise<boolean>;
   onAdjustLoad: (id: string, delta: -2.5 | 2.5, seriesIndex?: number) => void;
   onAdjustRepetitions: (id: string, delta: -1 | 1, seriesIndex: number) => void;
-  onUpdateSeriesStatus: (id: string, seriesIndex: number, status: ItemStatus) => void;
-  onUpdateExerciseStatus: (id: string, status: ItemStatus) => void;
+  onUpdateSeriesStatus: (id: string, seriesIndex: number, status: ItemStatus) => Promise<boolean>;
+  onUpdateExerciseStatus: (id: string, status: ItemStatus) => Promise<boolean>;
   onUpdateSeriesEffort: (id: string, seriesIndex: number, value: string) => void;
   onUpdateSeriesMethod: (id: string, seriesIndex: number, method: AdvancedMethod) => void;
   onUpdateSeriesBlock: (id: string, seriesIndex: number, blockIndex: number, update: Partial<MiniBlock>) => void;
@@ -46,9 +46,26 @@ export default function SessionPanel(props: Props) {
   const [expanded, setExpanded] = useState<string[]>([]);
   const [confirming, setConfirming] = useState<string | null>(null);
   const toggle = (id: string) => setExpanded((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
-  const requestComplete = (exercise: Exercise) => {
+  const collapse = (id: string) => setExpanded((current) => current.filter((item) => item !== id));
+  const requestComplete = async (exercise: Exercise) => {
     const pending = configurations(exercise).filter((set) => !set.isRemoved && !["completed", "assumed_completed", "skipped"].includes(set.executionStatus ?? "pending"));
-    if (pending.length) setConfirming(exercise.id); else props.onToggleComplete(exercise.id);
+    if (pending.length) {
+      setConfirming(exercise.id);
+      return;
+    }
+    const finishing = !props.completedIds.includes(exercise.id);
+    if (await props.onToggleComplete(exercise.id) && finishing) collapse(exercise.id);
+  };
+  const confirmCompletion = async (exercise: Exercise, status: "completed" | "partial", completePending = false) => {
+    const series = configurations(exercise).filter((set) => !set.isRemoved);
+    if (completePending) {
+      const savedSets = await Promise.all(series.map((_, setIndex) => props.onUpdateSeriesStatus(exercise.id, setIndex, "completed")));
+      if (savedSets.some((saved) => !saved)) return;
+    }
+    if (await props.onUpdateExerciseStatus(exercise.id, status)) {
+      setConfirming(null);
+      collapse(exercise.id);
+    }
   };
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/80" role="dialog" aria-modal="true" aria-labelledby="session-title">
@@ -58,10 +75,14 @@ export default function SessionPanel(props: Props) {
       <div className="flex-1 space-y-2 overflow-y-auto p-3 sm:p-4">
         {props.exercises.map((exercise, index) => {
           const done = props.completedIds.includes(exercise.id);
+          const isPartial = exercise.executionStatus === "partial";
+          const isFinished = done || isPartial;
+          const completionLabel = isPartial ? "Parcial" : done ? "Concluído" : "Concluir";
+          const completionTone = isFinished ? "bg-emerald-500 text-white" : "border border-emerald-500/35 text-emerald-600";
           const series = configurations(exercise).filter((set) => !set.isRemoved);
           const isExpanded = expanded.includes(exercise.id);
-          return <article key={exercise.id} className={`overflow-hidden rounded-xl border ${done ? "border-emerald-500/45 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)]"}`}>
-            <div className="flex items-center gap-2 p-3"><span className={`grid size-8 shrink-0 place-items-center rounded-full text-xs font-bold ${done ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)]"}`}>{done ? "✓" : index + 1}</span><div className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{[exercise.prescription, exercise.load, exercise.rest].filter(Boolean).join(" · ")}</span></div><button type="button" onClick={() => requestComplete(exercise)} className={`rounded-lg px-3 py-2 text-xs font-semibold ${done ? "bg-emerald-500 text-white" : "border border-emerald-500/35 text-emerald-600"}`}>{done ? "Concluído" : "Concluir"}</button><button type="button" onClick={() => toggle(exercise.id)} className="grid size-8 place-items-center rounded-lg border border-[var(--border)]" aria-label={isExpanded ? "Recolher exercício" : "Expandir exercício"}>{isExpanded ? "⌃" : "⌄"}</button></div>
+          return <article key={exercise.id} className={`overflow-hidden rounded-xl border ${isFinished ? "border-emerald-500/45 bg-emerald-500/10" : "border-[var(--border)] bg-[var(--background)]"}`}>
+            <div className="flex items-center gap-2 p-3"><span className={`grid size-8 shrink-0 place-items-center rounded-full text-xs font-bold ${isFinished ? "bg-emerald-500 text-white" : "bg-[var(--surface-raised)]"}`}>{isFinished ? "✓" : index + 1}</span><div className="min-w-0 flex-1"><strong className="block truncate text-sm">{exercise.name}</strong><span className="block truncate text-xs text-[var(--muted)]">{[exercise.prescription, exercise.load, exercise.rest].filter(Boolean).join(" · ")}</span></div><button type="button" onClick={() => requestComplete(exercise)} className={`rounded-lg px-3 py-2 text-xs font-semibold ${completionTone}`}>{completionLabel}</button><button type="button" onClick={() => toggle(exercise.id)} className="grid size-8 place-items-center rounded-lg border border-[var(--border)]" aria-label={isExpanded ? "Recolher exercício" : "Expandir exercício"}>{isExpanded ? "⌃" : "⌄"}</button></div>
             {isExpanded && <div className="border-t border-[var(--border)] p-2">{series.map((set, setIndex) => {
               const blocks = blocksFor(set);
               return <div key={set.id ?? setIndex} className="border-b border-[var(--border)] py-2 last:border-0">
@@ -69,8 +90,8 @@ export default function SessionPanel(props: Props) {
                 {blocks.length > 0 && <div className="ml-7 mt-1 space-y-1 border-l-2 border-violet-400/40 pl-2"><div className="flex justify-end gap-1"><button type="button" className="rounded border border-[var(--border)] px-2 py-1 text-[10px]" onClick={() => props.onChangeSeriesBlockCount(exercise.id, setIndex, -1)} disabled={blocks.length <= 2}>− Bloco</button><button type="button" className="rounded border border-[var(--border)] px-2 py-1 text-[10px]" onClick={() => props.onChangeSeriesBlockCount(exercise.id, setIndex, 1)}>+ Bloco</button></div>{blocks.map((block, blockIndex) => <div key={blockIndex} className="grid grid-cols-[48px_minmax(0,1fr)_32px_40px] items-center gap-1.5 rounded bg-violet-500/5 px-2 py-1.5 text-xs sm:grid-cols-[58px_minmax(0,1fr)_32px_40px] sm:gap-2"><span className="truncate text-violet-700">B{blockIndex + 1}</span><div className="grid min-w-0 grid-cols-1 gap-1 sm:grid-cols-2 sm:gap-2"><Counter compact value={block.reps} onDecrease={() => props.onUpdateSeriesBlock(exercise.id, setIndex, blockIndex, { reps: Math.max(1, block.reps - 1) })} onIncrease={() => props.onUpdateSeriesBlock(exercise.id, setIndex, blockIndex, { reps: block.reps + 1 })} /><Counter compact value={block.load} onDecrease={() => props.onUpdateSeriesBlock(exercise.id, setIndex, blockIndex, { load: formatLoad(block.load, -2.5) })} onIncrease={() => props.onUpdateSeriesBlock(exercise.id, setIndex, blockIndex, { load: formatLoad(block.load, 2.5) })} /></div><button type="button" onClick={() => props.onUpdateSeriesBlock(exercise.id, setIndex, blockIndex, { status: block.status === "skipped" ? "pending" : "skipped" })} className={`grid size-8 place-items-center rounded text-xs ${block.status === "skipped" ? "bg-amber-500/25 text-amber-800" : "text-[var(--muted)]"}`} aria-label={`Pular bloco ${blockIndex + 1}`}>↷</button><button type="button" onClick={() => props.onUpdateSeriesBlock(exercise.id, setIndex, blockIndex, { status: block.status === "completed" ? "pending" : "completed" })} className={`grid size-10 place-items-center rounded-lg text-base ${block.status === "completed" ? "bg-emerald-500 text-white" : "bg-emerald-500/15 text-emerald-700"}`}>✓</button></div>)}</div>}
                 <span className="ml-7 mt-1 block text-[10px] text-[var(--muted)]">{exercise.rest ?? "Descanso prescrito"}</span>
               </div>;
-            })}<div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => props.onChangeSeries(exercise.id, -1)} disabled={series.length === 1} className="rounded border border-[var(--border)] px-2 py-1 text-xs">− Série</button><button type="button" onClick={() => props.onChangeSeries(exercise.id, 1)} className="rounded border border-[var(--border)] px-2 py-1 text-xs">+ Série</button><button type="button" onClick={() => props.onToggleSwap(exercise.id)} className="ml-auto rounded border border-blue-500/30 px-2 py-1 text-xs text-blue-600">Trocar exercício</button></div>{props.swappingExerciseId === exercise.id && <div className="mt-2 grid gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 p-2 sm:grid-cols-2"><label className="text-xs">Exercício<select value={exercise.name} onChange={(event) => props.onUpdateExercise(exercise.id, "name", event.target.value)} className="mt-1 h-10 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-base">{props.compatibleNames(exercise).map((name) => <option key={name}>{name}</option>)}</select></label><label className="text-xs">Carga<input value={exercise.load} onChange={(event) => props.onUpdateExercise(exercise.id, "load", event.target.value)} className="mt-1 h-10 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-base" /></label></div>}</div>}
-            {confirming === exercise.id && <div className="border-t border-amber-500/25 bg-amber-500/10 p-3 text-sm"><p>Existem séries ainda não confirmadas. Como deseja concluir?</p><div className="mt-2 flex flex-wrap gap-2"><Button onClick={() => { series.forEach((_, setIndex) => props.onUpdateSeriesStatus(exercise.id, setIndex, "completed")); props.onUpdateExerciseStatus(exercise.id, "completed"); setConfirming(null); }}>Concluir todas</Button><Button variant="secondary" onClick={() => { props.onUpdateExerciseStatus(exercise.id, "partial"); setConfirming(null); }}>Manter confirmadas</Button><Button variant="ghost" onClick={() => setConfirming(null)}>Cancelar</Button></div></div>}
+            })}<div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => props.onChangeSeries(exercise.id, -1)} disabled={series.length === 1} className="rounded border border-[var(--border)] px-2 py-1 text-xs">− Série</button><button type="button" onClick={() => props.onChangeSeries(exercise.id, 1)} className="rounded border border-[var(--border)] px-2 py-1 text-xs">+ Série</button><button type="button" onClick={() => props.onToggleSwap(exercise.id)} className="ml-auto rounded border border-blue-500/30 px-2 py-1 text-xs text-blue-600">Trocar exercício</button><button type="button" onClick={() => requestComplete(exercise)} className={`rounded px-2 py-1 text-xs font-semibold ${completionTone}`}>{completionLabel}</button></div>{props.swappingExerciseId === exercise.id && <div className="mt-2 grid gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 p-2 sm:grid-cols-2"><label className="text-xs">Exercício<select value={exercise.name} onChange={(event) => props.onUpdateExercise(exercise.id, "name", event.target.value)} className="mt-1 h-10 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-base">{props.compatibleNames(exercise).map((name) => <option key={name}>{name}</option>)}</select></label><label className="text-xs">Carga<input value={exercise.load} onChange={(event) => props.onUpdateExercise(exercise.id, "load", event.target.value)} className="mt-1 h-10 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-base" /></label></div>}</div>}
+            {confirming === exercise.id && <div className="border-t border-amber-500/25 bg-amber-500/10 p-3 text-sm"><p>Existem séries ainda não confirmadas. Como deseja concluir?</p><div className="mt-2 flex flex-wrap gap-2"><Button onClick={() => confirmCompletion(exercise, "completed", true)}>Concluir todas</Button><Button variant="secondary" onClick={() => confirmCompletion(exercise, "partial")}>Manter confirmadas</Button><Button variant="ghost" onClick={() => setConfirming(null)}>Cancelar</Button></div></div>}
           </article>;
         })}
       </div>
