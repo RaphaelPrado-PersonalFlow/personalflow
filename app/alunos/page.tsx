@@ -15,11 +15,12 @@ import {
   updateStudent,
   updateStudentNotes,
 } from "@/services/students";
+import { getStudentsTrainingMetrics, StudentTrainingMetrics } from "@/services/training-sessions";
 
 type StudentFilter = "all" | "active" | "frequency" | "inactive7" | "reevaluation";
 type Student = {
-  id: string; name: string; phone: string; email: string; cpf: string; goal: string; frequency: number;
-  status: "Ativo" | "Pausado" | "Inativo"; lastSession: string; daysWithoutTraining: number;
+  id: string; name: string; phone: string; email: string; cpf: string; goal: string; frequency: number | null;
+  status: "Ativo" | "Pausado" | "Inativo"; lastSession: string; daysWithoutTraining: number | null;
   nextSession: string; initials: string; reevaluationPending: boolean; observations: string;
 };
 
@@ -27,7 +28,17 @@ function getInitials(name: string) {
   return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function fromRecord(student: StudentRecord): Student {
+function formatLastSession(value: string | null) {
+  if (!value) return "Ainda não treinou";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function fromRecord(student: StudentRecord, metrics?: StudentTrainingMetrics): Student {
   return {
     id: student.id,
     name: student.full_name,
@@ -35,10 +46,10 @@ function fromRecord(student: StudentRecord): Student {
     email: student.email ?? "",
     cpf: student.cpf ?? "",
     goal: student.goal ?? "Não informado",
-    frequency: 0,
+    frequency: metrics?.frequency ?? null,
     status: student.status === "active" ? "Ativo" : student.status === "paused" ? "Pausado" : "Inativo",
-    lastSession: "Ainda não treinou",
-    daysWithoutTraining: 0,
+    lastSession: formatLastSession(metrics?.lastSessionAt ?? null),
+    daysWithoutTraining: metrics?.daysWithoutTraining ?? null,
     nextSession: "Não agendado",
     initials: getInitials(student.full_name),
     reevaluationPending: false,
@@ -76,7 +87,9 @@ export default function StudentsPage() {
     let active = true;
     listStudents()
       .then((records) => {
-        if (active) setStudents(records.map(fromRecord));
+        return getStudentsTrainingMetrics(records.map((record) => record.id)).then((metrics) => {
+          if (active) setStudents(records.map((record) => fromRecord(record, metrics[record.id])));
+        });
       })
       .catch(() => {
         if (active) setFeedback("Não foi possível carregar os alunos. Tente novamente.");
@@ -90,9 +103,12 @@ export default function StudentsPage() {
   }, []);
 
   const activeStudents = students.filter((student) => student.status === "Ativo");
-  const inactiveSeven = students.filter((student) => student.daysWithoutTraining >= 7);
+  const inactiveSeven = students.filter((student) => student.daysWithoutTraining === null || student.daysWithoutTraining >= 7);
   const reevaluationPending = students.filter((student) => student.reevaluationPending);
-  const averageFrequency = Math.round(activeStudents.reduce((total, student) => total + student.frequency, 0) / Math.max(activeStudents.length, 1));
+  const studentsWithFrequency = activeStudents.filter((student): student is Student & { frequency: number } => student.frequency !== null);
+  const averageFrequency = studentsWithFrequency.length
+    ? Math.round(studentsWithFrequency.reduce((total, student) => total + student.frequency, 0) / studentsWithFrequency.length)
+    : null;
 
   const filteredStudents = useMemo(() => {
     const normalized = query.toLocaleLowerCase("pt-BR");
@@ -101,9 +117,14 @@ export default function StudentsPage() {
       (student.name.toLocaleLowerCase("pt-BR").includes(normalized) || student.goal.toLocaleLowerCase("pt-BR").includes(normalized)),
     );
     if (studentFilter === "active") result = result.filter((student) => student.status === "Ativo");
-    if (studentFilter === "inactive7") result = result.filter((student) => student.daysWithoutTraining >= 7);
+    if (studentFilter === "inactive7") result = result.filter((student) => student.daysWithoutTraining === null || student.daysWithoutTraining >= 7);
     if (studentFilter === "reevaluation") result = result.filter((student) => student.reevaluationPending);
-    if (studentFilter === "frequency") result = [...result].sort((a, b) => frequencyOrder === "highest" ? b.frequency - a.frequency : frequencyOrder === "lowest" ? a.frequency - b.frequency : a.name.localeCompare(b.name, "pt-BR"));
+    if (studentFilter === "frequency") result = [...result].sort((a, b) => {
+      if (frequencyOrder === "alphabetical") return a.name.localeCompare(b.name, "pt-BR");
+      if (a.frequency === null) return 1;
+      if (b.frequency === null) return -1;
+      return frequencyOrder === "highest" ? b.frequency - a.frequency : a.frequency - b.frequency;
+    });
     return result;
   }, [frequencyOrder, query, status, studentFilter, students]);
 
@@ -145,7 +166,13 @@ export default function StudentsPage() {
     setSaving(true);
     setFeedback("");
     try {
-      const updated = fromRecord(await updateStudent({ id: studentToEdit.id, full_name: fullName, phone, email, cpf: cpf || null, goal }));
+      const updatedRecord = fromRecord(await updateStudent({ id: studentToEdit.id, full_name: fullName, phone, email, cpf: cpf || null, goal }));
+      const updated = {
+        ...updatedRecord,
+        frequency: studentToEdit.frequency,
+        lastSession: studentToEdit.lastSession,
+        daysWithoutTraining: studentToEdit.daysWithoutTraining,
+      };
       setStudents((current) => current.map((student) => student.id === updated.id ? updated : student));
       setSelectedStudent(updated);
       setStudentToEdit(null);
@@ -190,7 +217,7 @@ export default function StudentsPage() {
         {feedback && <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-4 py-3 text-sm text-blue-600">{feedback}</div>}
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <button className="text-left" onClick={() => chooseFilter("active")}><StatCard title="Alunos ativos" value={activeStudents.length} detail={`${students.length} alunos cadastrados`} tone="blue" /></button>
-          <button className="text-left" onClick={() => chooseFilter("frequency")}><StatCard title="Frequência média" value={`${averageFrequency}%`} detail="Clique para ordenar" tone="green" /></button>
+          <button className="text-left" onClick={() => chooseFilter("frequency")}><StatCard title="Frequência média" value={averageFrequency === null ? "—" : `${averageFrequency}%`} detail="Últimos 30 dias" tone="green" /></button>
           <button className="text-left" onClick={() => chooseFilter("inactive7")}><StatCard title="Sem treinar há 7+ dias" value={inactiveSeven.length} detail="Precisam de atenção" tone="amber" /></button>
           <button className="text-left" onClick={() => chooseFilter("reevaluation")}><StatCard title="Reavaliações pendentes" value={reevaluationPending.length} detail="Pendentes ou vencidas" tone="violet" /></button>
         </section>
@@ -206,7 +233,7 @@ export default function StudentsPage() {
         <section id="student-list" className="scroll-mt-24 space-y-3">
           {studentFilter !== "all" && <div className="flex items-center justify-between"><p className="text-sm font-semibold">{studentFilter === "active" ? "Alunos ativos" : studentFilter === "frequency" ? "Frequência dos alunos" : studentFilter === "inactive7" ? "Sem treinar há 7 dias ou mais" : "Reavaliações pendentes ou vencidas"}</p><button onClick={() => setStudentFilter("all")} className="text-sm font-semibold text-blue-500">Limpar filtro</button></div>}
           {loading && <Card className="grid min-h-56 place-items-center text-center"><p className="text-sm text-[var(--muted)]">Carregando alunos...</p></Card>}
-          {!loading && filteredStudents.map((student) => <Card key={student.id} className="p-0 transition hover:border-blue-500/40"><div className="flex items-center gap-3 p-4 sm:gap-4 sm:p-5"><div className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-500/10 text-sm font-semibold text-blue-500">{student.initials}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate font-semibold">{student.name}</h2><span className="hidden sm:inline-flex"><Badge tone={student.status === "Ativo" ? "success" : student.status === "Pausado" ? "warning" : "neutral"}>{student.status}</Badge></span></div><p className="mt-1 truncate text-sm text-[var(--muted)]">{student.goal} · {student.frequency}% de frequência</p></div><a href={whatsappUrl(student.phone)} target="_blank" rel="noreferrer" aria-label={`Enviar mensagem para ${student.name}`} className="inline-flex shrink-0 rounded-xl border border-emerald-500/30 px-2 py-2 text-xs font-semibold text-emerald-600 sm:px-3"><span className="sm:hidden">WhatsApp</span><span className="hidden sm:inline">Enviar mensagem</span></a><button onClick={() => setExpandedStudents((current) => current.includes(student.id) ? current.filter((id) => id !== student.id) : [...current, student.id])} className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-expanded={expandedStudents.includes(student.id)}>⌄</button></div>{expandedStudents.includes(student.id) && <div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase text-[var(--muted)]">Último treino</p><p className="mt-1 text-sm font-medium">{student.lastSession}</p></div><div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase text-[var(--muted)]">Próximo treino</p><p className="mt-1 text-sm font-medium">{student.nextSession}</p></div><div className="rounded-xl bg-[var(--surface-raised)] p-3"><div className="flex justify-between"><p className="text-[11px] uppercase text-[var(--muted)]">Frequência</p><p className="text-sm font-semibold">{student.frequency}%</p></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-blue-500" style={{ width: `${student.frequency}%` }} /></div></div></div><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><a href={whatsappUrl(student.phone)} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-xl border border-emerald-500/30 px-4 text-sm font-semibold text-emerald-600">Enviar mensagem</a><Button variant="secondary" onClick={() => setSelectedStudent(student)}>Ver perfil</Button><Button onClick={() => window.location.href = `/treinos/${student.id}`}>Abrir treino</Button></div></div>}</Card>)}
+          {!loading && filteredStudents.map((student) => <Card key={student.id} className="p-0 transition hover:border-blue-500/40"><div className="flex items-center gap-3 p-4 sm:gap-4 sm:p-5"><div className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-500/10 text-sm font-semibold text-blue-500">{student.initials}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate font-semibold">{student.name}</h2><span className="hidden sm:inline-flex"><Badge tone={student.status === "Ativo" ? "success" : student.status === "Pausado" ? "warning" : "neutral"}>{student.status}</Badge></span></div><p className="mt-1 truncate text-sm text-[var(--muted)]">{student.goal} · {student.frequency === null ? "—" : `${student.frequency}%`} de frequência</p></div><a href={whatsappUrl(student.phone)} target="_blank" rel="noreferrer" aria-label={`Enviar mensagem para ${student.name}`} className="inline-flex shrink-0 rounded-xl border border-emerald-500/30 px-2 py-2 text-xs font-semibold text-emerald-600 sm:px-3"><span className="sm:hidden">WhatsApp</span><span className="hidden sm:inline">Enviar mensagem</span></a><button onClick={() => setExpandedStudents((current) => current.includes(student.id) ? current.filter((id) => id !== student.id) : [...current, student.id])} className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)]" aria-expanded={expandedStudents.includes(student.id)}>⌄</button></div>{expandedStudents.includes(student.id) && <div className="border-t border-[var(--border)] p-4 sm:p-5"><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase text-[var(--muted)]">Último treino</p><p className="mt-1 text-sm font-medium">{student.lastSession}</p></div><div className="rounded-xl bg-[var(--surface-raised)] p-3"><p className="text-[11px] uppercase text-[var(--muted)]">Próximo treino</p><p className="mt-1 text-sm font-medium">{student.nextSession}</p></div><div className="rounded-xl bg-[var(--surface-raised)] p-3"><div className="flex justify-between"><p className="text-[11px] uppercase text-[var(--muted)]">Frequência</p><p className="text-sm font-semibold">{student.frequency === null ? "—" : `${student.frequency}%`}</p></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--background)]"><div className="h-full rounded-full bg-blue-500" style={{ width: `${student.frequency ?? 0}%` }} /></div></div></div><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end"><a href={whatsappUrl(student.phone)} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-xl border border-emerald-500/30 px-4 text-sm font-semibold text-emerald-600">Enviar mensagem</a><Button variant="secondary" onClick={() => setSelectedStudent(student)}>Ver perfil</Button><Button onClick={() => window.location.href = `/treinos/${student.id}`}>Abrir treino</Button></div></div>}</Card>)}
           {!loading && filteredStudents.length === 0 && <Card className="grid min-h-56 place-items-center text-center"><div><p className="text-lg font-semibold">Nenhum aluno encontrado</p><p className="mt-2 text-sm text-[var(--muted)]">{students.length === 0 ? "Cadastre o primeiro aluno para começar." : "Tente alterar a pesquisa ou os filtros."}</p></div></Card>}
         </section>
       </div>

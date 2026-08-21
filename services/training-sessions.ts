@@ -152,6 +152,109 @@ export async function promoteTrainingSessionChanges(id: string, selection: Train
 
 export type WorkoutExecutionSummary = { count: number; lastCompletedAt: string | null };
 
+export type StudentTrainingMetrics = {
+  lastSessionAt: string | null;
+  daysWithoutTraining: number | null;
+  frequency: number | null;
+  completedAppointments: number;
+  eligibleAppointments: number;
+};
+
+type StudentLatestSessionRow = {
+  id: string;
+  latest_sessions: Array<{ completed_at: string }> | null;
+};
+
+type EligibleAppointmentRow = {
+  id: string;
+  student_id: string;
+  attendance_sessions: Array<{ id: string }> | null;
+};
+
+const TRAINING_TIME_ZONE = "America/Sao_Paulo";
+
+function calendarDateNumber(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TRAINING_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((item) => item.type === type)?.value ?? 0);
+  return Date.UTC(part("year"), part("month") - 1, part("day"));
+}
+
+function calendarDaysSince(value: string, now: Date) {
+  return Math.max(0, Math.round((calendarDateNumber(now) - calendarDateNumber(new Date(value))) / 86_400_000));
+}
+
+export async function getStudentsTrainingMetrics(
+  studentIds: string[],
+  now = new Date(),
+): Promise<Record<string, StudentTrainingMetrics>> {
+  if (!studentIds.length) return {};
+
+  const client = createClient();
+  const windowStart = new Date(now.getTime() - 30 * 86_400_000).toISOString();
+  const windowEnd = now.toISOString();
+  const [latestResponse, appointmentsResponse] = await Promise.all([
+    client
+      .from("students")
+      .select("id, latest_sessions:training_sessions(completed_at)")
+      .in("id", studentIds)
+      .in("latest_sessions.status", ["completed", "partial"])
+      .not("latest_sessions.completed_at", "is", null)
+      .order("completed_at", { referencedTable: "latest_sessions", ascending: false })
+      .limit(1, { referencedTable: "latest_sessions" }),
+    client
+      .from("appointments")
+      .select("id, student_id, attendance_sessions:training_sessions(id)")
+      .in("student_id", studentIds)
+      .eq("type", "training")
+      .is("deleted_at", null)
+      .in("status", ["scheduled", "waiting", "in_progress", "completed", "no_show"])
+      .gte("starts_at", windowStart)
+      .lte("ends_at", windowEnd)
+      .in("attendance_sessions.status", ["completed", "partial"])
+      .limit(1, { referencedTable: "attendance_sessions" }),
+  ]);
+
+  if (latestResponse.error) throw latestResponse.error;
+  if (appointmentsResponse.error) throw appointmentsResponse.error;
+
+  const metrics: Record<string, StudentTrainingMetrics> = Object.fromEntries(studentIds.map((studentId) => [studentId, {
+    lastSessionAt: null,
+    daysWithoutTraining: null,
+    frequency: null,
+    completedAppointments: 0,
+    eligibleAppointments: 0,
+  } satisfies StudentTrainingMetrics]));
+
+  for (const row of (latestResponse.data ?? []) as unknown as StudentLatestSessionRow[]) {
+    const lastSessionAt = row.latest_sessions?.[0]?.completed_at ?? null;
+    metrics[row.id].lastSessionAt = lastSessionAt;
+    metrics[row.id].daysWithoutTraining = lastSessionAt ? calendarDaysSince(lastSessionAt, now) : null;
+  }
+
+  for (const row of (appointmentsResponse.data ?? []) as unknown as EligibleAppointmentRow[]) {
+    const studentMetrics = metrics[row.student_id];
+    if (!studentMetrics) continue;
+    studentMetrics.eligibleAppointments += 1;
+    if (row.attendance_sessions?.length) studentMetrics.completedAppointments += 1;
+  }
+
+  for (const studentMetrics of Object.values(metrics)) {
+    if (studentMetrics.eligibleAppointments > 0) {
+      studentMetrics.frequency = Math.round(
+        (studentMetrics.completedAppointments / studentMetrics.eligibleAppointments) * 100,
+      );
+    }
+  }
+
+  return metrics;
+}
+
 export async function listWorkoutExecutionSummaries(): Promise<Record<string, WorkoutExecutionSummary>> {
   const client = createClient();
   const [{ data: sessionData, error: sessionError }, { data: workoutData, error: workoutError }] = await Promise.all([
